@@ -54,8 +54,6 @@ Do not use Claude-family models or Cursor Auto for the canary.
 
 ## SHAs
 
-Filled after commit/push:
-
-- IMPLEMENTATION_SHA: _(pending)_
-- DECISION_SHA: _(same commit or note)_
-- HEAD: _(branch tip)_
+- IMPLEMENTATION_SHA: `9582212d3e840b8cbd4cb5ce778b5d9a651c3588`
+- DECISION_SHA: `9582212d3e840b8cbd4cb5ce778b5d9a651c3588` (DEC-003-003 included)
+- HEAD: `9582212d3e840b8cbd4cb5ce778b5d9a651c3588` (may advance with evidence-only follow-up)
