@@ -1,6 +1,6 @@
 # WP-001 Evidence — Durable Control Core
 
-Recorded: 2026-08-29  
+Recorded: 2026-08-29
 Updated: 2026-08-29 (REWORK R1 — WP001-IR-001 / WP001-IR-002)
 
 ## Baseline
