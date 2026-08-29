@@ -1,12 +1,12 @@
 # WP-002 Evidence — Single Worker Completion Loop
 
-Recorded: 2026-08-29 (REWORK R5)
+Recorded: 2026-08-29 (REWORK R6)
 
 ## Baseline
 
 - `main @ 8f6d7387085e2e012f1f2bd698482cbd68e14b8a`
 - Branch: `wp-002/single-worker-completion-loop`
-- Prior R4 candidate: `9e555dac60cb1556f1b96ca01864269cb85b93eb`
+- Prior R5 candidate: `e45d94235e8775e77071af0a04dd1c19f852692a`
 - WP-001 history not rewritten
 
 ## Event contract
@@ -25,7 +25,7 @@ JSONL is a durable projection of SQLite events:
 - schema migration MAY perform a one-time atomic projection rebuild to establish a new projection contract/order
 - after rebuild, append-only behavior resumes
 
-## Schema v4 + R5 projection reconciliation (WP002-IR-007)
+## Schema v4 + R5/R6 projection reconciliation (WP002-IR-007)
 
 Migration `3→4`:
 
@@ -34,7 +34,13 @@ Migration `3→4`:
 3. mark all events `jsonl_flushed=1`
 4. bump schema version to 4
 
-On every open at schema v4, projection is reconciled if JSONL does not exactly match SQLite `event_seq` order (crash convergence).
+On every open at schema v4, projection is reconciled when non-canonical:
+
+- unreadable / syntactically invalid destination JSONL → rebuild from SQLite
+- missing `event_seq`, wrong order, payload/identity mismatch, or missing flushed events → rebuild
+- pending unflushed rows and JSONL briefly ahead of committed flush markers do **not** force rebuild (preserves concurrent flush)
+
+Rebuild write/replace failures still surface.
 
 ## Result persistence (WP002-IR-010)
 
@@ -54,7 +60,7 @@ PASS | FAIL | SETUP_ERROR | EXEC_ERROR | VERIFY_ERROR | RESULT_ERROR | ABANDONED
 
 ```text
 $ npm test
-50 pass / 0 fail
+51 pass / 0 fail
 
 $ npm run build
 exit 0
@@ -66,7 +72,11 @@ $ git diff --check 8f6d7387085e2e012f1f2bd698482cbd68e14b8a..HEAD
 exit 0
 ```
 
-Includes real legacy v3 divergent-JSONL migration and interrupted-rebuild reopen convergence.
+Includes:
+
+- real legacy v3 divergent-JSONL migration
+- interrupted-rebuild reopen convergence
+- malformed destination `events.jsonl` rebuild + idempotent second open
 
 ## Scope
 

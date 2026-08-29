@@ -266,32 +266,56 @@ function migrateToV4(db: DatabaseSync, stateDir: string): void {
   db.prepare("UPDATE schema_meta SET version = 4 WHERE id = 1").run();
 }
 
-function readJsonlLines(stateDir: string): Array<Record<string, unknown>> {
+/**
+ * Read JSONL projection lines.
+ * Unreadable / syntactically invalid projection is treated as non-canonical
+ * (returns null), not as an authoritative-state failure.
+ */
+function tryReadJsonlLines(
+  stateDir: string,
+): Array<Record<string, unknown>> | null {
   const path = eventsJsonlPath(stateDir);
   if (!existsSync(path)) return [];
-  const text = readFileSync(path, "utf8");
-  if (!text.trim()) return [];
-  return text
-    .split(/\r?\n/)
-    .filter((line) => line.length > 0)
-    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  try {
+    const text = readFileSync(path, "utf8");
+    if (!text.trim()) return [];
+    return text
+      .split(/\r?\n/)
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+  } catch {
+    return null;
+  }
 }
 
 function projectionMatchesSqlite(db: DatabaseSync, stateDir: string): boolean {
-  const rows = db
-    .prepare(
-      `SELECT event_id, event_seq, ts, event_type, project_id, work_id, payload
-       FROM events
-       ORDER BY event_seq ASC`,
-    )
-    .all() as Array<Record<string, unknown>>;
-  const lines = readJsonlLines(stateDir);
-  if (lines.length !== rows.length) return false;
-  for (let i = 0; i < rows.length; i += 1) {
-    const row = rows[i];
-    const line = lines[i];
-    if (line.event_seq == null) return false;
-    if (String(line.event_id) !== String(row.event_id)) return false;
+  const lines = tryReadJsonlLines(stateDir);
+  // Malformed / unreadable destination JSONL → rebuild from SQLite.
+  if (lines == null) return false;
+  // Legacy pre-v4 lines lack event_seq → rebuild.
+  if (lines.some((line) => line.event_seq == null)) return false;
+
+  // JSONL must be in ascending event_seq order.
+  for (let i = 1; i < lines.length; i += 1) {
+    if (Number(lines[i - 1].event_seq) > Number(lines[i].event_seq)) {
+      return false;
+    }
+  }
+
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const line of lines) {
+    const id = String(line.event_id);
+    if (byId.has(id)) return false; // duplicate identity in projection
+    byId.set(id, line);
+  }
+
+  // Every JSONL line must match its authoritative SQLite row.
+  const lookup = db.prepare(`SELECT * FROM events WHERE event_id = ?`);
+  for (const line of lines) {
+    const row = lookup.get(String(line.event_id)) as
+      | Record<string, unknown>
+      | undefined;
+    if (!row) return false; // extra projection event
     if (Number(line.event_seq) !== Number(row.event_seq)) return false;
     if (String(line.ts) !== String(row.ts)) return false;
     if (String(line.event_type) !== String(row.event_type)) return false;
@@ -307,6 +331,21 @@ function projectionMatchesSqlite(db: DatabaseSync, stateDir: string): boolean {
     if (JSON.stringify(line.payload) !== JSON.stringify(rowPayload)) {
       return false;
     }
+  }
+
+  // Every committed flushed SQLite event must appear in JSONL.
+  // Unflushed rows may be absent (ordinary append-only pending projection).
+  // JSONL may temporarily include lines for rows whose flushed bit is not yet
+  // visible to other processes; that is not a rebuild trigger.
+  const flushed = db
+    .prepare(
+      `SELECT event_id FROM events
+       WHERE jsonl_flushed = 1
+       ORDER BY event_seq ASC`,
+    )
+    .all() as Array<{ event_id: string }>;
+  for (const row of flushed) {
+    if (!byId.has(String(row.event_id))) return false;
   }
   return true;
 }

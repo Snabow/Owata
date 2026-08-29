@@ -1184,6 +1184,69 @@ test("WP002-IR-007 R5: interrupted projection rebuild converges on reopen", () =
   }
 });
 
+test("WP002-IR-007 R6: malformed destination JSONL rebuilds from SQLite", () => {
+  const dir = tempState();
+  try {
+    // Valid schema-v4 authoritative state.
+    const store = ControlStore.open({ stateDir: dir });
+    const project = store.createProject("malformed");
+    store.createWork(project.project_id, "w1", {
+      taskType: "sum_two",
+      taskInput: { a: 1, b: 2, expected: 3, bug: false },
+    });
+    store.createWork(project.project_id, "w2", {
+      taskType: "sum_two",
+      taskInput: { a: 3, b: 4, expected: 7, bug: false },
+    });
+    const before = store.listEvents();
+    assert.ok(before.length >= 3);
+    const expectedIds = before.map((e) => e.event_id);
+    const expectedSeqs = before.map((e) => e.event_seq);
+    store.close();
+
+    // Replace destination events.jsonl itself with syntactically malformed JSON.
+    writeFileSync(
+      eventsJsonlPath(dir),
+      "{not-json\nthis is garbage\n",
+      "utf8",
+    );
+    writeFileSync(`${eventsJsonlPath(dir)}.tmp`, "stale-tmp\n", "utf8");
+    writeFileSync(`${eventsJsonlPath(dir)}.aside`, "stale-aside\n", "utf8");
+
+    const reopen = ControlStore.open({ stateDir: dir });
+    assert.equal(reopen.schemaVersion(), 4);
+    const sqlite = reopen.listEvents();
+    const jsonl = reopen.readJsonlEvents();
+    assert.deepEqual(
+      sqlite.map((e) => e.event_id),
+      expectedIds,
+    );
+    assert.deepEqual(
+      sqlite.map((e) => e.event_seq),
+      expectedSeqs,
+    );
+    assert.deepEqual(
+      jsonl.map((e) => [String(e.event_id), Number(e.event_seq)]),
+      sqlite.map((e) => [e.event_id, e.event_seq]),
+    );
+    assert.equal(new Set(jsonl.map((e) => String(e.event_id))).size, jsonl.length);
+    for (const e of jsonl) {
+      assert.ok(typeof e.event_seq === "number");
+      assert.ok(e.event_type);
+    }
+    reopen.close();
+
+    const again = ControlStore.open({ stateDir: dir });
+    assert.deepEqual(
+      again.listEvents().map((e) => [e.event_id, e.event_seq]),
+      again.readJsonlEvents().map((e) => [String(e.event_id), Number(e.event_seq)]),
+    );
+    again.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("lease-expired unfinished attempt becomes ABANDONED", () => {
   const dir = tempState();
   try {
