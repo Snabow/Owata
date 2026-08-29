@@ -17,6 +17,7 @@ import {
 import { newId, nowIso } from "./ids.js";
 import {
   ControlError,
+  type AttemptOutcome,
   type AttemptRecord,
   type EventRecord,
   type EventType,
@@ -61,6 +62,8 @@ function mapWork(row: Record<string, unknown>): WorkRecord {
     task_input: taskInput,
     repair_count: Number(row.repair_count ?? 0),
     max_repairs: Number(row.max_repairs ?? 1),
+    failure_reason:
+      row.failure_reason == null ? null : String(row.failure_reason),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
   };
@@ -88,6 +91,10 @@ function mapAttempt(row: Record<string, unknown>): AttemptRecord {
       row.verification_detail == null
         ? null
         : String(row.verification_detail),
+    attempt_outcome:
+      row.attempt_outcome == null
+        ? null
+        : (String(row.attempt_outcome) as AttemptOutcome),
     repair_applied: Number(row.repair_applied ?? 0) === 1,
     repair_note: row.repair_note == null ? null : String(row.repair_note),
     created_at: String(row.created_at),
@@ -253,6 +260,7 @@ export class ControlStore {
       task_input: options?.taskInput ?? null,
       repair_count: 0,
       max_repairs: maxRepairs,
+      failure_reason: null,
       created_at: ts,
       updated_at: ts,
     };
@@ -263,9 +271,9 @@ export class ControlStore {
           `INSERT INTO work_items (
              work_id, project_id, title, state, attempt,
              lease_owner, lease_token, lease_expires_at,
-             task_type, task_input, repair_count, max_repairs,
+             task_type, task_input, repair_count, max_repairs, failure_reason,
              created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           work.work_id,
@@ -280,6 +288,7 @@ export class ControlStore {
           work.task_input == null ? null : JSON.stringify(work.task_input),
           work.repair_count,
           work.max_repairs,
+          null,
           work.created_at,
           work.updated_at,
         );
@@ -376,7 +385,8 @@ export class ControlStore {
   }
 
   /**
-   * Complete work only if the caller holds the current unexpired lease.
+   * Complete work only if the caller holds the current unexpired lease
+   * AND the latest finished attempt has execution_ok=true and verification PASS.
    */
   completeWork(
     workId: string,
@@ -385,28 +395,31 @@ export class ControlStore {
     now: Date = this.clock(),
   ): WorkRecord {
     const completed = this.withTransaction(() => {
-      const row = this.db
-        .prepare("SELECT * FROM work_items WHERE work_id = ?")
+      const work = this.assertActiveLease(workId, leaseToken, workerId, now);
+      const latest = this.db
+        .prepare(
+          `SELECT * FROM work_attempts
+           WHERE work_id = ? AND finished_at IS NOT NULL
+           ORDER BY attempt_number DESC
+           LIMIT 1`,
+        )
         .get(workId) as Record<string, unknown> | undefined;
-      if (!row) {
-        throw new ControlError("NOT_FOUND", `Unknown work: ${workId}`);
-      }
-      const work = mapWork(row);
-      if (work.state !== "RUNNING") {
+      if (!latest) {
         throw new ControlError(
-          "ILLEGAL_TRANSITION",
-          `Cannot complete work in state ${work.state}`,
+          "COMPLETION_GATE",
+          "No finished attempt available for completion",
         );
       }
+      const attempt = mapAttempt(latest);
       if (
-        work.lease_token !== leaseToken ||
-        work.lease_owner !== workerId ||
-        !work.lease_expires_at
+        attempt.execution_ok !== true ||
+        attempt.verification_status !== "PASS" ||
+        attempt.attempt_outcome !== "PASS"
       ) {
-        throw new ControlError("STALE_LEASE", "Lease token/owner mismatch");
-      }
-      if (Date.parse(work.lease_expires_at) <= now.getTime()) {
-        throw new ControlError("STALE_LEASE", "Lease has expired");
+        throw new ControlError(
+          "COMPLETION_GATE",
+          "Completion requires execution_ok=true and verification PASS",
+        );
       }
 
       const ts = now.toISOString();
@@ -417,6 +430,7 @@ export class ControlStore {
                lease_owner = NULL,
                lease_token = NULL,
                lease_expires_at = NULL,
+               failure_reason = NULL,
                updated_at = ?
            WHERE work_id = ?
              AND state = 'RUNNING'
@@ -432,7 +446,11 @@ export class ControlStore {
       this.insertEvent("work.completed", {
         project_id: work.project_id,
         work_id: workId,
-        payload: { worker_id: workerId, lease_token: leaseToken },
+        payload: {
+          worker_id: workerId,
+          lease_token: leaseToken,
+          attempt_id: attempt.attempt_id,
+        },
         ts,
       });
       return this.getWork(workId);
@@ -445,8 +463,56 @@ export class ControlStore {
   }
 
   /**
+   * Terminal non-completed decision. Clears lease; not claimable; not requeued.
+   */
+  failWork(
+    workId: string,
+    leaseToken: string,
+    workerId: string,
+    reason: string,
+    now: Date = this.clock(),
+  ): WorkRecord {
+    let failed: WorkRecord | null = null;
+    this.withTransaction(() => {
+      const work = this.assertActiveLease(workId, leaseToken, workerId, now);
+      const ts = now.toISOString();
+      const result = this.db
+        .prepare(
+          `UPDATE work_items
+           SET state = 'FAILED',
+               lease_owner = NULL,
+               lease_token = NULL,
+               lease_expires_at = NULL,
+               failure_reason = ?,
+               updated_at = ?
+           WHERE work_id = ?
+             AND state = 'RUNNING'
+             AND lease_token = ?
+             AND lease_owner = ?`,
+        )
+        .run(reason, ts, workId, leaseToken, workerId);
+      if (result.changes !== 1) {
+        throw new ControlError("STALE_LEASE", "Lease lost during failWork");
+      }
+      this.insertEvent("work.failed", {
+        project_id: work.project_id,
+        work_id: workId,
+        payload: { worker_id: workerId, reason },
+        ts,
+      });
+      failed = this.getWork(workId);
+    });
+    this.flushEventJsonl();
+    if (!failed) {
+      throw new ControlError("INTERNAL", "failWork did not return work");
+    }
+    return failed;
+  }
+
+  /**
    * Requeue RUNNING work whose lease has expired.
-   * Preserves work_id and attempt history; clears stale lease fields.
+   * Unfinished attempts are classified ABANDONED (unknown crash outcome).
+   * FAILED work is never requeued.
    */
   recoverExpiredLeases(now: Date = this.clock()): WorkRecord[] {
     const recovered = this.withTransaction(() => {
@@ -464,6 +530,39 @@ export class ControlStore {
 
       for (const row of rows) {
         const work = mapWork(row);
+
+        const unfinished = this.db
+          .prepare(
+            `SELECT * FROM work_attempts
+             WHERE work_id = ? AND finished_at IS NULL`,
+          )
+          .all(work.work_id) as Record<string, unknown>[];
+        for (const att of unfinished) {
+          this.db
+            .prepare(
+              `UPDATE work_attempts
+               SET finished_at = ?,
+                   attempt_outcome = 'ABANDONED',
+                   verification_detail = COALESCE(verification_detail, ?)
+               WHERE attempt_id = ? AND finished_at IS NULL`,
+            )
+            .run(
+              ts,
+              "abandoned: lease expired before attempt finalization",
+              String(att.attempt_id),
+            );
+          this.insertEvent("work.attempt_abandoned", {
+            project_id: work.project_id,
+            work_id: work.work_id,
+            payload: {
+              attempt_id: String(att.attempt_id),
+              previous_owner: work.lease_owner,
+              reason: "lease_expired",
+            },
+            ts,
+          });
+        }
+
         const result = this.db
           .prepare(
             `UPDATE work_items
@@ -491,6 +590,7 @@ export class ControlStore {
             previous_token: work.lease_token,
             expired_at: work.lease_expires_at,
             attempt: work.attempt,
+            abandoned_attempts: unfinished.length,
           },
           ts,
         });
@@ -573,9 +673,9 @@ export class ControlStore {
           `INSERT INTO work_attempts (
              attempt_id, work_id, attempt_number, worker_id,
              started_at, finished_at, execution_ok, result_json,
-             verification_status, verification_detail,
+             verification_status, verification_detail, attempt_outcome,
              repair_applied, repair_note, created_at
-           ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?)`,
         )
         .run(attemptId, workId, attemptNumber, workerId, ts, ts);
       this.insertEvent("work.execution_started", {
@@ -628,6 +728,11 @@ export class ControlStore {
       if (!existing || String(existing.work_id) !== args.workId) {
         throw new ControlError("NOT_FOUND", "Unknown attempt");
       }
+      if (existing.finished_at != null) {
+        throw new ControlError("INVALID", "Attempt already finished");
+      }
+      const outcome: AttemptOutcome =
+        args.verificationStatus === "PASS" ? "PASS" : "FAIL";
       const ts = now.toISOString();
       this.db
         .prepare(
@@ -636,7 +741,8 @@ export class ControlStore {
                execution_ok = ?,
                result_json = ?,
                verification_status = ?,
-               verification_detail = ?
+               verification_detail = ?,
+               attempt_outcome = ?
            WHERE attempt_id = ?`,
         )
         .run(
@@ -645,6 +751,7 @@ export class ControlStore {
           JSON.stringify(args.result),
           args.verificationStatus,
           args.verificationDetail,
+          outcome,
           args.attemptId,
         );
 
@@ -655,6 +762,7 @@ export class ControlStore {
           attempt_id: args.attemptId,
           execution_ok: args.executionOk,
           result: args.result,
+          attempt_outcome: outcome,
         },
         ts,
       });
@@ -666,6 +774,7 @@ export class ControlStore {
           payload: {
             attempt_id: args.attemptId,
             detail: args.verificationDetail,
+            execution_ok: args.executionOk,
           },
           ts,
         });
@@ -676,6 +785,7 @@ export class ControlStore {
           payload: {
             attempt_id: args.attemptId,
             detail: args.verificationDetail,
+            execution_ok: args.executionOk,
           },
           ts,
         });
@@ -694,11 +804,91 @@ export class ControlStore {
     return finished;
   }
 
+  /**
+   * Finalize an attempt that threw during execute() or verify().
+   * Preserves any known execution result; never claims crash certainty beyond ERROR.
+   */
+  finalizeAttemptError(
+    args: {
+      workId: string;
+      leaseToken: string;
+      workerId: string;
+      attemptId: string;
+      outcome: "EXEC_ERROR" | "VERIFY_ERROR";
+      executionOk: boolean | null;
+      result: Record<string, unknown> | null;
+      detail: string;
+    },
+    now: Date = this.clock(),
+  ): AttemptRecord {
+    let finished: AttemptRecord | null = null;
+    this.withTransaction(() => {
+      const work = this.assertActiveLease(
+        args.workId,
+        args.leaseToken,
+        args.workerId,
+        now,
+      );
+      const existing = this.db
+        .prepare("SELECT * FROM work_attempts WHERE attempt_id = ?")
+        .get(args.attemptId) as Record<string, unknown> | undefined;
+      if (!existing || String(existing.work_id) !== args.workId) {
+        throw new ControlError("NOT_FOUND", "Unknown attempt");
+      }
+      if (existing.finished_at != null) {
+        throw new ControlError("INVALID", "Attempt already finished");
+      }
+      const ts = now.toISOString();
+      this.db
+        .prepare(
+          `UPDATE work_attempts
+           SET finished_at = ?,
+               execution_ok = ?,
+               result_json = ?,
+               verification_status = NULL,
+               verification_detail = ?,
+               attempt_outcome = ?
+           WHERE attempt_id = ? AND finished_at IS NULL`,
+        )
+        .run(
+          ts,
+          args.executionOk == null ? null : args.executionOk ? 1 : 0,
+          args.result == null ? null : JSON.stringify(args.result),
+          args.detail.slice(0, 500),
+          args.outcome,
+          args.attemptId,
+        );
+      this.insertEvent("work.execution_finished", {
+        project_id: work.project_id,
+        work_id: args.workId,
+        payload: {
+          attempt_id: args.attemptId,
+          attempt_outcome: args.outcome,
+          execution_ok: args.executionOk,
+          result: args.result,
+          detail: args.detail.slice(0, 500),
+        },
+        ts,
+      });
+      finished = mapAttempt(
+        this.db
+          .prepare("SELECT * FROM work_attempts WHERE attempt_id = ?")
+          .get(args.attemptId) as Record<string, unknown>,
+      );
+    });
+    this.flushEventJsonl();
+    if (!finished) {
+      throw new ControlError("INTERNAL", "Failed to finalize attempt error");
+    }
+    return finished;
+  }
+
   applyRepair(
     args: {
       workId: string;
       leaseToken: string;
       workerId: string;
+      attemptId: string;
       nextInput: Record<string, unknown>;
       note: string;
     },
@@ -715,6 +905,32 @@ export class ControlStore {
       if (work.repair_count >= work.max_repairs) {
         throw new ControlError("REPAIR_BUDGET", "Repair budget exhausted");
       }
+      const attRow = this.db
+        .prepare("SELECT * FROM work_attempts WHERE attempt_id = ?")
+        .get(args.attemptId) as Record<string, unknown> | undefined;
+      if (!attRow || String(attRow.work_id) !== args.workId) {
+        throw new ControlError("REPAIR_GATE", "Attempt not found for work");
+      }
+      const attempt = mapAttempt(attRow);
+      if (!attempt.finished_at) {
+        throw new ControlError("REPAIR_GATE", "Attempt is not finished");
+      }
+      if (
+        attempt.verification_status !== "FAIL" ||
+        attempt.attempt_outcome !== "FAIL"
+      ) {
+        throw new ControlError(
+          "REPAIR_GATE",
+          "Repair requires a finished verification FAIL attempt",
+        );
+      }
+      if (attempt.repair_applied) {
+        throw new ControlError(
+          "REPAIR_GATE",
+          "Repair already applied to this attempt",
+        );
+      }
+
       const ts = now.toISOString();
       const nextCount = work.repair_count + 1;
       this.db
@@ -726,11 +942,20 @@ export class ControlStore {
            WHERE work_id = ?`,
         )
         .run(JSON.stringify(args.nextInput), nextCount, ts, args.workId);
+      this.db
+        .prepare(
+          `UPDATE work_attempts
+           SET repair_applied = 1,
+               repair_note = ?
+           WHERE attempt_id = ?`,
+        )
+        .run(args.note, args.attemptId);
 
       this.insertEvent("work.repair_applied", {
         project_id: work.project_id,
         work_id: args.workId,
         payload: {
+          attempt_id: args.attemptId,
           repair_count: nextCount,
           max_repairs: work.max_repairs,
           note: args.note,

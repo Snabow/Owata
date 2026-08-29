@@ -23,7 +23,42 @@ function tempState(): string {
 }
 
 function cleanup(dir: string): void {
-  rmSync(dir, { recursive: true, force: true });
+  // Windows may briefly hold SQLite WAL handles after close.
+  let last: unknown;
+  for (let i = 0; i < 8; i += 1) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      last = err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (i + 1));
+    }
+  }
+  throw last;
+}
+
+/** WP-002 completion gate: mark a finished PASS attempt under the active lease. */
+function finishPassAttempt(
+  store: ControlStore,
+  workId: string,
+  leaseToken: string,
+  workerId: string,
+  now: Date,
+): void {
+  const att = store.beginExecutionAttempt(workId, leaseToken, workerId, now);
+  store.finishExecutionAttempt(
+    {
+      workId,
+      leaseToken,
+      workerId,
+      attemptId: att.attempt_id,
+      executionOk: true,
+      result: { ok: true },
+      verificationStatus: "PASS",
+      verificationDetail: "wp001-compat",
+    },
+    now,
+  );
 }
 
 test("sqlite init: WAL, schema version, idempotent reopen", () => {
@@ -31,13 +66,13 @@ test("sqlite init: WAL, schema version, idempotent reopen", () => {
   try {
     const a = ControlStore.open({ stateDir: dir });
     assert.equal(a.walEnabled(), true);
-    assert.equal(a.schemaVersion(), 2);
+    assert.equal(a.schemaVersion(), 3);
     assert.equal(existsSync(dbPath(dir)), true);
     a.close();
 
     const b = ControlStore.open({ stateDir: dir });
     assert.equal(b.walEnabled(), true);
-    assert.equal(b.schemaVersion(), 2);
+    assert.equal(b.schemaVersion(), 3);
     b.close();
   } finally {
     cleanup(dir);
@@ -158,11 +193,19 @@ test("lease fencing: stale/expired lease cannot complete; current can", () => {
       (err: unknown) => err instanceof ControlError && err.code === "STALE_LEASE",
     );
 
+    const tOk = new Date("2026-01-01T00:00:00.500Z");
+    finishPassAttempt(
+      store,
+      claimed.work_id,
+      claimed.lease_token!,
+      "worker-a",
+      tOk,
+    );
     const done = store.completeWork(
       claimed.work_id,
       claimed.lease_token!,
       "worker-a",
-      new Date("2026-01-01T00:00:00.500Z"),
+      tOk,
     );
     assert.equal(done.state, "COMPLETED");
     assert.equal(done.lease_token, null);
@@ -455,6 +498,13 @@ test("crash recovery: kill claimant process, recover same work_id, complete", as
     assert.equal(claimed.work_id, work.work_id);
     assert.equal(claimed.state, "RUNNING");
 
+    finishPassAttempt(
+      resume,
+      claimed.work_id,
+      claimed.lease_token!,
+      "worker-resume",
+      new Date(),
+    );
     const done = resume.completeWork(
       claimed.work_id,
       claimed.lease_token!,

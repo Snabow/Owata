@@ -1,10 +1,18 @@
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export type ProjectState = "ACTIVE";
 
-export type WorkState = "QUEUED" | "RUNNING" | "COMPLETED";
+export type WorkState = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
 
 export type VerificationStatus = "PASS" | "FAIL";
+
+/** Durable classification of a finished (or abandoned) attempt. */
+export type AttemptOutcome =
+  | "PASS"
+  | "FAIL"
+  | "EXEC_ERROR"
+  | "VERIFY_ERROR"
+  | "ABANDONED";
 
 export type EventType =
   | "project.created"
@@ -16,6 +24,8 @@ export type EventType =
   | "work.verification_failed"
   | "work.verification_passed"
   | "work.repair_applied"
+  | "work.attempt_abandoned"
+  | "work.failed"
   | "work.completed";
 
 export interface ProjectRecord {
@@ -39,6 +49,7 @@ export interface WorkRecord {
   task_input: Record<string, unknown> | null;
   repair_count: number;
   max_repairs: number;
+  failure_reason: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -54,6 +65,7 @@ export interface AttemptRecord {
   result_json: Record<string, unknown> | null;
   verification_status: VerificationStatus | null;
   verification_detail: string | null;
+  attempt_outcome: AttemptOutcome | null;
   repair_applied: boolean;
   repair_note: string | null;
   created_at: string;

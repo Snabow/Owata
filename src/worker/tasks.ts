@@ -75,6 +75,14 @@ const handlers = new Map<string, TaskHandler>([
   [sumTwoHandler.taskType, sumTwoHandler],
 ]);
 
+export function registerTaskHandler(handler: TaskHandler): void {
+  handlers.set(handler.taskType, handler);
+}
+
+export function unregisterTaskHandler(taskType: string): void {
+  handlers.delete(taskType);
+}
+
 export function getTaskHandler(taskType: string): TaskHandler {
   const handler = handlers.get(taskType);
   if (!handler) {

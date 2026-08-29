@@ -11,6 +11,7 @@ export {
 } from "./db.js";
 export { SCHEMA_VERSION, ControlError } from "./types.js";
 export type {
+  AttemptOutcome,
   AttemptRecord,
   EventRecord,
   EventType,

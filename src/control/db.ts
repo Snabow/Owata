@@ -140,14 +140,22 @@ function migrate(db: DatabaseSync): void {
     | { version: number }
     | undefined;
   if (!existing) {
+    // Fresh database starts as exact schema v1, then migrates through the chain.
     db.prepare("INSERT INTO schema_meta (id, version) VALUES (1, 1)").run();
   }
 
   let version = getSchemaVersion(db);
-  if (version < 2) {
+
+  // Exact migration chain only — never treat unknown versions as v1.
+  if (version === 1) {
     migrateToV2(db);
     version = getSchemaVersion(db);
   }
+  if (version === 2) {
+    migrateToV3(db);
+    version = getSchemaVersion(db);
+  }
+
   if (version !== SCHEMA_VERSION) {
     throw new Error(
       `Unsupported schema version ${version}; expected ${SCHEMA_VERSION}`,
@@ -194,4 +202,10 @@ function migrateToV2(db: DatabaseSync): void {
   `);
 
   db.prepare("UPDATE schema_meta SET version = 2 WHERE id = 1").run();
+}
+
+function migrateToV3(db: DatabaseSync): void {
+  addColumnIfMissing(db, "work_items", "failure_reason", "TEXT");
+  addColumnIfMissing(db, "work_attempts", "attempt_outcome", "TEXT");
+  db.prepare("UPDATE schema_meta SET version = 3 WHERE id = 1").run();
 }

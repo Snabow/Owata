@@ -6,8 +6,14 @@ import { getTaskHandler, requireExecutableWork } from "./tasks.js";
 export interface WorkerRunResult {
   work: WorkRecord;
   completed: boolean;
+  failed: boolean;
   attempts: AttemptRecord[];
   reason?: string;
+}
+
+function sanitizeError(err: unknown): string {
+  if (err instanceof Error) return err.message.slice(0, 500);
+  return String(err).slice(0, 500);
 }
 
 /**
@@ -42,24 +48,99 @@ export function runOwnedWork(
       workerId,
       now(),
     );
-    const execution = handler.execute(taskInput);
-    const verification = handler.verify(taskInput, execution);
 
-    store.finishExecutionAttempt(
+    let executionOk: boolean | null = null;
+    let executionResult: Record<string, unknown> | null = null;
+
+    try {
+      const execution = handler.execute(taskInput);
+      executionOk = execution.ok;
+      executionResult = execution.output;
+    } catch (err) {
+      store.finalizeAttemptError(
+        {
+          workId: current.work_id,
+          leaseToken,
+          workerId,
+          attemptId: attempt.attempt_id,
+          outcome: "EXEC_ERROR",
+          executionOk: null,
+          result: null,
+          detail: sanitizeError(err),
+        },
+        now(),
+      );
+      const failed = store.failWork(
+        current.work_id,
+        leaseToken,
+        workerId,
+        `execution_error:${sanitizeError(err)}`,
+        now(),
+      );
+      return {
+        work: failed,
+        completed: false,
+        failed: true,
+        attempts: store.listAttempts(current.work_id),
+        reason: "execution_error",
+      };
+    }
+
+    let verificationStatus: "PASS" | "FAIL";
+    let verificationDetail: string;
+    try {
+      const verification = handler.verify(taskInput, {
+        ok: executionOk === true,
+        output: executionResult ?? {},
+      });
+      verificationStatus = verification.status;
+      verificationDetail = verification.detail;
+    } catch (err) {
+      store.finalizeAttemptError(
+        {
+          workId: current.work_id,
+          leaseToken,
+          workerId,
+          attemptId: attempt.attempt_id,
+          outcome: "VERIFY_ERROR",
+          executionOk,
+          result: executionResult,
+          detail: sanitizeError(err),
+        },
+        now(),
+      );
+      const failed = store.failWork(
+        current.work_id,
+        leaseToken,
+        workerId,
+        `verification_error:${sanitizeError(err)}`,
+        now(),
+      );
+      return {
+        work: failed,
+        completed: false,
+        failed: true,
+        attempts: store.listAttempts(current.work_id),
+        reason: "verification_error",
+      };
+    }
+
+    const finished = store.finishExecutionAttempt(
       {
         workId: current.work_id,
         leaseToken,
         workerId,
         attemptId: attempt.attempt_id,
-        executionOk: execution.ok,
-        result: execution.output,
-        verificationStatus: verification.status,
-        verificationDetail: verification.detail,
+        executionOk: executionOk === true,
+        result: executionResult ?? {},
+        verificationStatus,
+        verificationDetail,
       },
       now(),
     );
 
-    if (verification.status === "PASS") {
+    // Completion gate: both execution success AND verification PASS.
+    if (finished.execution_ok === true && finished.verification_status === "PASS") {
       const completed = store.completeWork(
         current.work_id,
         leaseToken,
@@ -69,15 +150,43 @@ export function runOwnedWork(
       return {
         work: completed,
         completed: true,
+        failed: false,
         attempts: store.listAttempts(current.work_id),
       };
     }
 
-    // Verification FAIL — never complete on execution success alone.
-    if (current.repair_count >= current.max_repairs) {
+    // verification PASS with execution failure → terminal FAILED (not COMPLETED)
+    if (finished.verification_status === "PASS" && finished.execution_ok !== true) {
+      const failed = store.failWork(
+        current.work_id,
+        leaseToken,
+        workerId,
+        "completion_gate:verification_pass_without_execution_ok",
+        now(),
+      );
       return {
-        work: store.getWork(current.work_id)!,
+        work: failed,
         completed: false,
+        failed: true,
+        attempts: store.listAttempts(current.work_id),
+        reason: "completion_gate_rejected",
+      };
+    }
+
+    // Verification FAIL — may repair if budget remains.
+    const latest = store.getWork(current.work_id)!;
+    if (latest.repair_count >= latest.max_repairs) {
+      const failed = store.failWork(
+        current.work_id,
+        leaseToken,
+        workerId,
+        "repair_budget_exhausted",
+        now(),
+      );
+      return {
+        work: failed,
+        completed: false,
+        failed: true,
         attempts: store.listAttempts(current.work_id),
         reason: "repair_budget_exhausted",
       };
@@ -85,9 +194,17 @@ export function runOwnedWork(
 
     const repair = handler.repair(taskInput);
     if (!repair) {
+      const failed = store.failWork(
+        current.work_id,
+        leaseToken,
+        workerId,
+        "no_repair_available",
+        now(),
+      );
       return {
-        work: store.getWork(current.work_id)!,
+        work: failed,
         completed: false,
+        failed: true,
         attempts: store.listAttempts(current.work_id),
         reason: "no_repair_available",
       };
@@ -98,12 +215,12 @@ export function runOwnedWork(
         workId: current.work_id,
         leaseToken,
         workerId,
+        attemptId: finished.attempt_id,
         nextInput: repair.nextInput,
         note: repair.note,
       },
       now(),
     );
-    // Continue loop for a new execution attempt under the same lease.
   }
 }
 
