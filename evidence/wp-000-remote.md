@@ -10,7 +10,7 @@ origin	https://github.com/Snabow/Owata.git (fetch)
 origin	https://github.com/Snabow/Owata.git (push)
 ```
 
-## Local / tracking status
+## Required verification at Genesis push
 
 ```text
 $ git status
@@ -18,11 +18,7 @@ On branch main
 Your branch is up to date with 'origin/main'.
 
 nothing to commit, working tree clean
-```
 
-## Commit / tag resolution
-
-```text
 $ git rev-parse HEAD
 5a89de0ffec8a6c267261bd4d8243ffa74fb3edc
 
@@ -34,21 +30,17 @@ $ git rev-list -n 1 genesis
 
 $ git rev-parse 'genesis^{commit}'
 5a89de0ffec8a6c267261bd4d8243ffa74fb3edc
-```
 
-Annotated tag object:
-
-```text
 $ git ls-remote origin refs/heads/main refs/tags/genesis
 5a89de0ffec8a6c267261bd4d8243ffa74fb3edc	refs/heads/main
 82165f97d09d19ba851943b0ade742adddf55587	refs/tags/genesis
 ```
 
-`refs/tags/genesis` is an annotated tag whose target commit is `5a89de0ffec8a6c267261bd4d8243ffa74fb3edc`.
+`refs/tags/genesis` is an annotated tag object `82165f97d09d19ba851943b0ade742adddf55587` whose target commit is `5a89de0ffec8a6c267261bd4d8243ffa74fb3edc`.
 
-## Remote contents (GitHub API)
+## Remote contents (GitHub API at Genesis push)
 
-Paths present on `main`:
+Paths present on `main` at Genesis:
 
 ```text
 .gitignore
@@ -62,11 +54,18 @@ src/cli.ts
 tsconfig.json
 ```
 
-Remote `main` commit SHA: `5a89de0ffec8a6c267261bd4d8243ffa74fb3edc`
+Subsequent evidence commits on `main` add/update:
+
+```text
+evidence/wp-000-remote.md
+evidence/wp-000-namespace.md
+```
+
+`genesis` was not moved by evidence commits.
 
 ## Confirmation checklist
 
 - GitHub repository contains WP-000 files: YES
-- Remote HEAD matches intended local HEAD: YES (`5a89de0...`)
+- Remote HEAD matches intended local HEAD: YES
 - `genesis` exists remotely: YES
-- `genesis` resolves to intended Genesis commit: YES (`5a89de0...`)
+- `genesis` resolves to intended Genesis commit: YES (`5a89de0ffec8a6c267261bd4d8243ffa74fb3edc`)
