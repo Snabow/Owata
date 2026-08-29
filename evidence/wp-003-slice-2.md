@@ -69,4 +69,4 @@ npm run build → PASS
 - IMPLEMENTATION_SHA: `9582212d3e840b8cbd4cb5ce778b5d9a651c3588`
 - Pre-canary tip: `61204a1bb981c6c9fb32ed34614ba4a037245746`
 - Canary harden commit: `32595fec2e65b53ba359b99773c0e7e7e0ccea72`
-- HEAD: `aaa40de557753b9b70af56eacbe1d65dab5b8d55` (evidence HEAD fill; next commit restores UTF-8)
+- HEAD: `3294a130218d885c145013a74dab2e6c024c64b9`
