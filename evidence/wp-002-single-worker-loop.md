@@ -1,54 +1,44 @@
 # WP-002 Evidence — Single Worker Completion Loop
 
-Recorded: 2026-08-29 (REWORK R4)
+Recorded: 2026-08-29 (REWORK R5)
 
 ## Baseline
 
 - `main @ 8f6d7387085e2e012f1f2bd698482cbd68e14b8a`
 - Branch: `wp-002/single-worker-completion-loop`
-- Prior R3 candidate: `f4c1c69cb9e7c69a8b12a094e74be4492bb48af4`
+- Prior R4 candidate: `9e555dac60cb1556f1b96ca01864269cb85b93eb`
 - WP-001 history not rewritten
 
-## Event contract (WP002-IR-007)
+## Event contract
 
 ```text
 event_id  = identity
 event_seq = authoritative causal/projected ordering
-ts        = observational metadata (not the sole sequencer)
+ts        = observational metadata
 ```
 
-Schema v4 adds durable monotonic `event_seq` (UNIQUE). Assignment occurs inside `BEGIN IMMEDIATE` via `MAX(event_seq)+1`.
+SQLite is the authoritative event store.
 
-`listEvents()` and JSONL projection both order by `event_seq ASC`. JSONL lines include `event_seq`.
+JSONL is a durable projection of SQLite events:
 
-Defined normal lifecycle order:
+- ordinary runtime operation remains append-only
+- schema migration MAY perform a one-time atomic projection rebuild to establish a new projection contract/order
+- after rebuild, append-only behavior resumes
 
-```text
-attempt_started
-→ execution_started
-→ execution_finished
-→ attempt_finished
-→ verification_passed | verification_failed
-→ repair_applied | completed | failed
-```
+## Schema v4 + R5 projection reconciliation (WP002-IR-007)
 
-SETUP_ERROR:
+Migration `3→4`:
 
-```text
-attempt_started → attempt_finished(SETUP_ERROR) → failed
-```
+1. backfill unique `event_seq` in SQLite (`ts ASC, event_id ASC` for legacy rows)
+2. atomically rebuild `events.jsonl` from SQLite `ORDER BY event_seq ASC` (temp + rename)
+3. mark all events `jsonl_flushed=1`
+4. bump schema version to 4
 
-(no execution events)
-
-Migration: exact `1→2→3→4`. Existing events are backfilled with contiguous `event_seq` preserving prior `ts,event_id` order.
+On every open at schema v4, projection is reconciled if JSONL does not exactly match SQLite `event_seq` order (crash convergence).
 
 ## Result persistence (WP002-IR-010)
 
-Non-JSON-serializable execution results throw `RESULT_SERIALIZE` before any finish commit.
-
-Worker finalizes `RESULT_ERROR` (execution occurred; result not represented) and `failWork(result_error:…)`.
-
-Offending graph is not persisted. Lease fencing preserved for `STALE_LEASE`.
+Non-serializable execution results → `RESULT_ERROR` → `FAILED`; no recyclable RUNNING.
 
 ## Attempt outcomes
 
@@ -58,13 +48,13 @@ PASS | FAIL | SETUP_ERROR | EXEC_ERROR | VERIFY_ERROR | RESULT_ERROR | ABANDONED
 
 ## Schema
 
-`SCHEMA_VERSION = 4`
+`SCHEMA_VERSION = 4` (exact chain `1→2→3→4`)
 
 ## Tests
 
 ```text
 $ npm test
-48 pass / 0 fail
+50 pass / 0 fail
 
 $ npm run build
 exit 0
@@ -75,6 +65,8 @@ exit 0
 $ git diff --check 8f6d7387085e2e012f1f2bd698482cbd68e14b8a..HEAD
 exit 0
 ```
+
+Includes real legacy v3 divergent-JSONL migration and interrupted-rebuild reopen convergence.
 
 ## Scope
 

@@ -1,4 +1,11 @@
 import { DatabaseSync } from "node:sqlite";
+import {
+  existsSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { SCHEMA_VERSION } from "./types.js";
 
@@ -36,7 +43,7 @@ export function openDatabase(stateDir: string): DatabaseSync {
       db.exec("PRAGMA busy_timeout = 30000;");
       db.exec("PRAGMA journal_mode = WAL;");
       db.exec("PRAGMA foreign_keys = ON;");
-      migrate(db);
+      migrate(db, stateDir);
       return db;
     } catch (err) {
       try {
@@ -88,7 +95,7 @@ function addColumnIfMissing(
   }
 }
 
-function migrate(db: DatabaseSync): void {
+function migrate(db: DatabaseSync, stateDir: string): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_meta (
       id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -156,7 +163,7 @@ function migrate(db: DatabaseSync): void {
     version = getSchemaVersion(db);
   }
   if (version === 3) {
-    migrateToV4(db);
+    migrateToV4(db, stateDir);
     version = getSchemaVersion(db);
   }
 
@@ -165,6 +172,9 @@ function migrate(db: DatabaseSync): void {
       `Unsupported schema version ${version}; expected ${SCHEMA_VERSION}`,
     );
   }
+
+  // Crash recovery / prior incomplete projection rebuild: converge from SQLite.
+  reconcileEventProjection(db, stateDir);
 }
 
 function migrateToV2(db: DatabaseSync): void {
@@ -215,10 +225,10 @@ function migrateToV3(db: DatabaseSync): void {
 }
 
 /**
- * Schema v4: durable monotonic event_seq for authoritative total event order.
- * event_id remains identity; ts remains observational metadata.
+ * Schema v4: durable monotonic event_seq + one-time JSONL projection rebuild.
+ * Ordinary runtime JSONL remains append-only; only migration/reconcile rebuilds.
  */
-function migrateToV4(db: DatabaseSync): void {
+function migrateToV4(db: DatabaseSync, stateDir: string): void {
   addColumnIfMissing(db, "events", "event_seq", "INTEGER");
 
   const missing = db
@@ -238,7 +248,6 @@ function migrateToV4(db: DatabaseSync): void {
     next += 1;
   }
 
-  // Enforce uniqueness for all rows after backfill.
   const nulls = db
     .prepare(`SELECT COUNT(*) AS c FROM events WHERE event_seq IS NULL`)
     .get() as { c: number };
@@ -252,5 +261,139 @@ function migrateToV4(db: DatabaseSync): void {
       ON events(jsonl_flushed, event_seq);
   `);
 
+  // Rebuild projection before bumping schema version so crash remigrates safely.
+  rebuildJsonlProjectionFromSqlite(db, stateDir);
   db.prepare("UPDATE schema_meta SET version = 4 WHERE id = 1").run();
+}
+
+function readJsonlLines(stateDir: string): Array<Record<string, unknown>> {
+  const path = eventsJsonlPath(stateDir);
+  if (!existsSync(path)) return [];
+  const text = readFileSync(path, "utf8");
+  if (!text.trim()) return [];
+  return text
+    .split(/\r?\n/)
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+function projectionMatchesSqlite(db: DatabaseSync, stateDir: string): boolean {
+  const rows = db
+    .prepare(
+      `SELECT event_id, event_seq, ts, event_type, project_id, work_id, payload
+       FROM events
+       ORDER BY event_seq ASC`,
+    )
+    .all() as Array<Record<string, unknown>>;
+  const lines = readJsonlLines(stateDir);
+  if (lines.length !== rows.length) return false;
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    const line = lines[i];
+    if (line.event_seq == null) return false;
+    if (String(line.event_id) !== String(row.event_id)) return false;
+    if (Number(line.event_seq) !== Number(row.event_seq)) return false;
+    if (String(line.ts) !== String(row.ts)) return false;
+    if (String(line.event_type) !== String(row.event_type)) return false;
+    const lineProject =
+      line.project_id == null ? null : String(line.project_id);
+    const rowProject =
+      row.project_id == null ? null : String(row.project_id);
+    if (lineProject !== rowProject) return false;
+    const lineWork = line.work_id == null ? null : String(line.work_id);
+    const rowWork = row.work_id == null ? null : String(row.work_id);
+    if (lineWork !== rowWork) return false;
+    const rowPayload = JSON.parse(String(row.payload));
+    if (JSON.stringify(line.payload) !== JSON.stringify(rowPayload)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Crash-safe atomic replace of events.jsonl.
+ * Writes temp file then renames into place (Windows-safe aside swap).
+ */
+function atomicReplaceFile(tmpPath: string, destPath: string): void {
+  if (existsSync(destPath)) {
+    const aside = `${destPath}.aside`;
+    try {
+      unlinkSync(aside);
+    } catch {
+      // ignore
+    }
+    renameSync(destPath, aside);
+    try {
+      renameSync(tmpPath, destPath);
+      try {
+        unlinkSync(aside);
+      } catch {
+        // best-effort cleanup
+      }
+    } catch (err) {
+      try {
+        renameSync(aside, destPath);
+      } catch {
+        // ignore restore failure; next open will rebuild from SQLite
+      }
+      throw err;
+    }
+  } else {
+    renameSync(tmpPath, destPath);
+  }
+}
+
+function rebuildJsonlProjectionFromSqlite(
+  db: DatabaseSync,
+  stateDir: string,
+): void {
+  const rows = db
+    .prepare(
+      `SELECT event_id, event_seq, ts, event_type, project_id, work_id, payload
+       FROM events
+       ORDER BY event_seq ASC`,
+    )
+    .all() as Array<Record<string, unknown>>;
+
+  const dest = eventsJsonlPath(stateDir);
+  const tmp = `${dest}.tmp`;
+  const body =
+    rows.length === 0
+      ? ""
+      : `${rows
+          .map((row) =>
+            JSON.stringify({
+              event_id: String(row.event_id),
+              event_seq: Number(row.event_seq),
+              ts: String(row.ts),
+              event_type: String(row.event_type),
+              project_id:
+                row.project_id == null ? null : String(row.project_id),
+              work_id: row.work_id == null ? null : String(row.work_id),
+              payload: JSON.parse(String(row.payload)),
+            }),
+          )
+          .join("\n")}\n`;
+
+  try {
+    unlinkSync(tmp);
+  } catch {
+    // ignore
+  }
+  writeFileSync(tmp, body, "utf8");
+  atomicReplaceFile(tmp, dest);
+
+  db.prepare(`UPDATE events SET jsonl_flushed = 1`).run();
+}
+
+/**
+ * Ensure JSONL matches authoritative SQLite event_seq order.
+ * Used after v4 migration and on every open for crash convergence.
+ */
+function reconcileEventProjection(db: DatabaseSync, stateDir: string): void {
+  if (getSchemaVersion(db) !== SCHEMA_VERSION) return;
+  if (!tableColumns(db, "events").has("event_seq")) return;
+  if (projectionMatchesSqlite(db, stateDir)) return;
+  rebuildJsonlProjectionFromSqlite(db, stateDir);
 }

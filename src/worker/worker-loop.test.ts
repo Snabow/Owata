@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,7 @@ import {
   ControlError,
   ControlStore,
   dbPath,
+  eventsJsonlPath,
   SCHEMA_VERSION,
 } from "../control/index.js";
 import {
@@ -108,6 +109,127 @@ function createExactV1Database(stateDir: string): void {
     )`,
   ).run();
   db.close();
+}
+
+/** Exact schema-v3 DB + already-flushed pre-v4 JSONL with intentional order mismatch. */
+function createExactV3LegacyWithDivergentJsonl(stateDir: string): {
+  eventIdsByBackfillOrder: string[];
+  jsonlAppendOrder: string[];
+  payloads: Record<string, Record<string, unknown>>;
+} {
+  mkdirSync(stateDir, { recursive: true });
+  const db = new DatabaseSync(dbPath(stateDir));
+  db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+  db.exec(`
+    CREATE TABLE schema_meta (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      version INTEGER NOT NULL
+    );
+    CREATE TABLE projects (
+      project_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      state TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE work_items (
+      work_id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(project_id),
+      title TEXT NOT NULL,
+      state TEXT NOT NULL,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      lease_owner TEXT,
+      lease_token TEXT,
+      lease_expires_at TEXT,
+      task_type TEXT,
+      task_input TEXT,
+      repair_count INTEGER NOT NULL DEFAULT 0,
+      max_repairs INTEGER NOT NULL DEFAULT 1,
+      failure_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE work_attempts (
+      attempt_id TEXT PRIMARY KEY,
+      work_id TEXT NOT NULL REFERENCES work_items(work_id),
+      attempt_number INTEGER NOT NULL,
+      worker_id TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      execution_ok INTEGER,
+      result_json TEXT,
+      verification_status TEXT,
+      verification_detail TEXT,
+      attempt_outcome TEXT,
+      repair_applied INTEGER NOT NULL DEFAULT 0,
+      repair_note TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE (work_id, attempt_number)
+    );
+    CREATE TABLE events (
+      event_id TEXT PRIMARY KEY,
+      ts TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      project_id TEXT,
+      work_id TEXT,
+      payload TEXT NOT NULL,
+      jsonl_flushed INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  db.prepare("INSERT INTO schema_meta (id, version) VALUES (1, 3)").run();
+  db.prepare(
+    `INSERT INTO projects VALUES ('prj_v3','legacy3','ACTIVE','2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`,
+  ).run();
+  db.prepare(
+    `INSERT INTO work_items (
+       work_id, project_id, title, state, attempt,
+       lease_owner, lease_token, lease_expires_at,
+       task_type, task_input, repair_count, max_repairs, failure_reason,
+       created_at, updated_at
+     ) VALUES (
+       'wrk_v3','prj_v3','legacy-v3','QUEUED',0,
+       NULL,NULL,NULL,
+       'sum_two','{"a":1}',0,1,NULL,
+       '2026-01-01T00:00:01.000Z','2026-01-01T00:00:01.000Z'
+     )`,
+  ).run();
+
+  const sameTs = "2026-02-01T00:00:00.000Z";
+  // Backfill order is ts ASC, event_id ASC → evt_a then evt_z (same ts).
+  const payloads: Record<string, Record<string, unknown>> = {
+    evt_a: { mark: "a", n: 1 },
+    evt_z: { mark: "z", n: 2 },
+    evt_mid: { mark: "mid", n: 3 },
+  };
+  const eventIdsByBackfillOrder = ["evt_a", "evt_z", "evt_mid"];
+  db.prepare(
+    `INSERT INTO events (event_id, ts, event_type, project_id, work_id, payload, jsonl_flushed)
+     VALUES (?, ?, 'work.created', 'prj_v3', 'wrk_v3', ?, 1)`,
+  ).run("evt_z", sameTs, JSON.stringify(payloads.evt_z));
+  db.prepare(
+    `INSERT INTO events (event_id, ts, event_type, project_id, work_id, payload, jsonl_flushed)
+     VALUES (?, ?, 'work.created', 'prj_v3', 'wrk_v3', ?, 1)`,
+  ).run("evt_a", sameTs, JSON.stringify(payloads.evt_a));
+  db.prepare(
+    `INSERT INTO events (event_id, ts, event_type, project_id, work_id, payload, jsonl_flushed)
+     VALUES (?, ?, 'work.created', 'prj_v3', 'wrk_v3', ?, 1)`,
+  ).run("evt_mid", "2026-02-01T00:00:01.000Z", JSON.stringify(payloads.evt_mid));
+  db.close();
+
+  // Pre-v4 JSONL: no event_seq, append order intentionally differs from backfill.
+  const jsonlAppendOrder = ["evt_z", "evt_mid", "evt_a"];
+  const lines = jsonlAppendOrder.map((id) =>
+    JSON.stringify({
+      event_id: id,
+      ts: id === "evt_mid" ? "2026-02-01T00:00:01.000Z" : sameTs,
+      event_type: "work.created",
+      project_id: "prj_v3",
+      work_id: "wrk_v3",
+      payload: payloads[id],
+    }),
+  );
+  writeFileSync(eventsJsonlPath(stateDir), `${lines.join("\n")}\n`, "utf8");
+  return { eventIdsByBackfillOrder, jsonlAppendOrder, payloads };
 }
 
 test("execution ok + verify PASS → COMPLETED", () => {
@@ -967,6 +1089,98 @@ test("WP002-IR-005 + migration: exact v1→v4 preserves rows; v0/future rejected
     assert.throws(() => ControlStore.open({ stateDir: future }), /Unsupported schema version 99/);
   } finally {
     cleanup(future);
+  }
+});
+
+test("WP002-IR-007 R5: real v3 legacy JSONL reconciles to event_seq order", () => {
+  const dir = tempState();
+  try {
+    const legacy = createExactV3LegacyWithDivergentJsonl(dir);
+    // Precondition: legacy JSONL order differs from eventual backfill order.
+    assert.notDeepEqual(legacy.jsonlAppendOrder, legacy.eventIdsByBackfillOrder);
+    const before = readFileSync(eventsJsonlPath(dir), "utf8");
+    assert.equal(before.includes("event_seq"), false);
+
+    const store = ControlStore.open({ stateDir: dir });
+    assert.equal(store.schemaVersion(), 4);
+    const sqlite = store.listEvents();
+    assert.equal(sqlite.length, 3);
+    assert.deepEqual(
+      sqlite.map((e) => e.event_id),
+      legacy.eventIdsByBackfillOrder,
+    );
+    const seqs = sqlite.map((e) => e.event_seq);
+    assert.equal(new Set(seqs).size, 3);
+    assert.deepEqual(seqs, [1, 2, 3]);
+
+    const jsonl = store.readJsonlEvents();
+    assert.equal(jsonl.length, 3);
+    assert.deepEqual(
+      jsonl.map((e) => String(e.event_id)),
+      sqlite.map((e) => e.event_id),
+    );
+    assert.deepEqual(
+      jsonl.map((e) => Number(e.event_seq)),
+      sqlite.map((e) => e.event_seq),
+    );
+    for (const e of jsonl) {
+      assert.ok(e.event_seq != null);
+      assert.deepEqual(e.payload, legacy.payloads[String(e.event_id)]);
+    }
+    // Identities/payloads unchanged.
+    for (const e of sqlite) {
+      assert.deepEqual(e.payload, legacy.payloads[e.event_id]);
+    }
+    store.close();
+
+    const again = ControlStore.open({ stateDir: dir });
+    assert.deepEqual(
+      again.listEvents().map((e) => [e.event_id, e.event_seq]),
+      again.readJsonlEvents().map((e) => [String(e.event_id), Number(e.event_seq)]),
+    );
+    again.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("WP002-IR-007 R5: interrupted projection rebuild converges on reopen", () => {
+  const dir = tempState();
+  try {
+    createExactV3LegacyWithDivergentJsonl(dir);
+    // First open migrates + rebuilds.
+    const store = ControlStore.open({ stateDir: dir });
+    store.close();
+
+    // Simulate crash after schema=4 but with divergent/corrupt projection left behind.
+    writeFileSync(
+      eventsJsonlPath(dir),
+      `${JSON.stringify({
+        event_id: "evt_z",
+        ts: "2026-02-01T00:00:00.000Z",
+        event_type: "work.created",
+        project_id: "prj_v3",
+        work_id: "wrk_v3",
+        payload: { mark: "z", n: 2 },
+      })}\n`,
+      "utf8",
+    );
+    // Also leave a stale temp file as if rename failed mid-flight.
+    writeFileSync(`${eventsJsonlPath(dir)}.tmp`, "partial\n", "utf8");
+
+    const reopen = ControlStore.open({ stateDir: dir });
+    const sqlite = reopen.listEvents();
+    const jsonl = reopen.readJsonlEvents();
+    assert.equal(sqlite.length, 3);
+    assert.equal(jsonl.length, 3);
+    assert.deepEqual(
+      jsonl.map((e) => [String(e.event_id), Number(e.event_seq)]),
+      sqlite.map((e) => [e.event_id, e.event_seq]),
+    );
+    assert.equal(new Set(jsonl.map((e) => String(e.event_id))).size, 3);
+    reopen.close();
+  } finally {
+    cleanup(dir);
   }
 });
 
