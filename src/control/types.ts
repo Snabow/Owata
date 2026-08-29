@@ -6,10 +6,18 @@ export type WorkState = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
 
 export type VerificationStatus = "PASS" | "FAIL";
 
-/** Durable classification of a finished (or abandoned) attempt. */
+/**
+ * Durable classification of a finished (or abandoned) attempt.
+ * PASS = execution_ok AND verification PASS (combined completion gate).
+ * FAIL = finished execute/verify path but overall gate failed (includes false+PASS).
+ * SETUP_ERROR = durable spec/handler preparation failed before execute.
+ * EXEC_ERROR / VERIFY_ERROR = handler throw during execute/verify.
+ * ABANDONED = ownership ended before final classification.
+ */
 export type AttemptOutcome =
   | "PASS"
   | "FAIL"
+  | "SETUP_ERROR"
   | "EXEC_ERROR"
   | "VERIFY_ERROR"
   | "ABANDONED";

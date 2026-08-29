@@ -125,7 +125,7 @@ test("WP002-IR-001: execution false + verifier PASS cannot complete", () => {
   try {
     const store = ControlStore.open({ stateDir: dir });
     const project = store.createProject("gate");
-    store.createWork(project.project_id, "bad", {
+    const work = store.createWork(project.project_id, "bad", {
       taskType,
       taskInput: {},
       maxRepairs: 0,
@@ -138,10 +138,253 @@ test("WP002-IR-001: execution false + verifier PASS cannot complete", () => {
     const att = store.listAttempts(result.work.work_id)[0];
     assert.equal(att.execution_ok, false);
     assert.equal(att.verification_status, "PASS");
-    assert.equal(att.attempt_outcome, "PASS"); // finished as verify PASS but gate rejects
+    assert.equal(att.attempt_outcome, "FAIL");
+
+    // Direct completeWork cannot bypass (lease already cleared on FAILED).
+    // Reproduce gate on a fresh RUNNING claim with same contradictory finish.
+    const project2 = store.createProject("gate2");
+    const work2 = store.createWork(project2.project_id, "bad2", {
+      taskType,
+      taskInput: {},
+      maxRepairs: 0,
+    });
+    const claimed = store.claimNextWork("w2", 5000)!;
+    const att2 = store.beginExecutionAttempt(
+      claimed.work_id,
+      claimed.lease_token!,
+      "w2",
+    );
+    store.finishExecutionAttempt({
+      workId: claimed.work_id,
+      leaseToken: claimed.lease_token!,
+      workerId: "w2",
+      attemptId: att2.attempt_id,
+      executionOk: false,
+      result: { reason: "failed_exec" },
+      verificationStatus: "PASS",
+      verificationDetail: "liar",
+    });
+    assert.throws(
+      () =>
+        store.completeWork(claimed.work_id, claimed.lease_token!, "w2"),
+      (e: unknown) => e instanceof ControlError && e.code === "COMPLETION_GATE",
+    );
+    assert.equal(store.getWork(claimed.work_id)?.state, "RUNNING");
+
     store.close();
+    const again = ControlStore.open({ stateDir: dir });
+    const preserved = again.listAttempts(work.work_id)[0];
+    assert.equal(preserved.execution_ok, false);
+    assert.equal(preserved.verification_status, "PASS");
+    assert.equal(preserved.attempt_outcome, "FAIL");
+    assert.equal(again.getWork(work.work_id)?.state, "FAILED");
+    void work2;
+    again.close();
   } finally {
     unregisterTaskHandler(taskType);
+    cleanup(dir);
+  }
+});
+
+test("WP002-IR-008: older PASS + newer unfinished cannot complete", () => {
+  const dir = tempState();
+  try {
+    const store = ControlStore.open({ stateDir: dir });
+    seedSumTwo(store, { a: 2, b: 3, expected: 5, bug: false });
+    const claimed = store.claimNextWork("w1", 5000)!;
+    const a1 = store.beginExecutionAttempt(
+      claimed.work_id,
+      claimed.lease_token!,
+      "w1",
+    );
+    store.finishExecutionAttempt({
+      workId: claimed.work_id,
+      leaseToken: claimed.lease_token!,
+      workerId: "w1",
+      attemptId: a1.attempt_id,
+      executionOk: true,
+      result: { sum: 5 },
+      verificationStatus: "PASS",
+      verificationDetail: "ok",
+    });
+    const a2 = store.beginExecutionAttempt(
+      claimed.work_id,
+      claimed.lease_token!,
+      "w1",
+    );
+    assert.throws(
+      () =>
+        store.completeWork(claimed.work_id, claimed.lease_token!, "w1"),
+      (e: unknown) => e instanceof ControlError && e.code === "COMPLETION_GATE",
+    );
+    assert.equal(store.getWork(claimed.work_id)?.state, "RUNNING");
+    assert.equal(store.listAttempts(claimed.work_id).length, 2);
+    assert.equal(
+      store.listAttempts(claimed.work_id).find((a) => a.attempt_id === a2.attempt_id)
+        ?.finished_at,
+      null,
+    );
+    assert.equal(
+      store.listEvents().some((e) => e.event_type === "work.completed"),
+      false,
+    );
+    store.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("WP002-IR-008: older PASS + newer FAIL cannot complete", () => {
+  const dir = tempState();
+  try {
+    const store = ControlStore.open({ stateDir: dir });
+    seedSumTwo(store, { a: 2, b: 3, expected: 5, bug: false });
+    const claimed = store.claimNextWork("w1", 5000)!;
+    const a1 = store.beginExecutionAttempt(
+      claimed.work_id,
+      claimed.lease_token!,
+      "w1",
+    );
+    store.finishExecutionAttempt({
+      workId: claimed.work_id,
+      leaseToken: claimed.lease_token!,
+      workerId: "w1",
+      attemptId: a1.attempt_id,
+      executionOk: true,
+      result: { sum: 5 },
+      verificationStatus: "PASS",
+      verificationDetail: "ok",
+    });
+    const a2 = store.beginExecutionAttempt(
+      claimed.work_id,
+      claimed.lease_token!,
+      "w1",
+    );
+    store.finishExecutionAttempt({
+      workId: claimed.work_id,
+      leaseToken: claimed.lease_token!,
+      workerId: "w1",
+      attemptId: a2.attempt_id,
+      executionOk: true,
+      result: { sum: 0 },
+      verificationStatus: "FAIL",
+      verificationDetail: "bad",
+    });
+    assert.throws(
+      () =>
+        store.completeWork(claimed.work_id, claimed.lease_token!, "w1"),
+      (e: unknown) => e instanceof ControlError && e.code === "COMPLETION_GATE",
+    );
+    assert.equal(store.getWork(claimed.work_id)?.state, "RUNNING");
+    store.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("WP002-IR-006: repair() throws → terminal FAILED; no re-execution", () => {
+  const dir = tempState();
+  const taskType = "repair_throws";
+  registerTaskHandler({
+    taskType,
+    execute: () => ({ ok: true, output: { v: 1 } }),
+    verify: () => ({ status: "FAIL", detail: "need-repair" }),
+    repair: () => {
+      throw new Error("repair-boom");
+    },
+  });
+  try {
+    const store = ControlStore.open({ stateDir: dir });
+    const project = store.createProject("rerr");
+    const work = store.createWork(project.project_id, "t", {
+      taskType,
+      taskInput: { n: 0 },
+      maxRepairs: 2,
+    });
+    const first = runOnce(store, "w1", 5000);
+    assert.ok(first);
+    assert.equal(first.failed, true);
+    assert.equal(first.work.state, "FAILED");
+    assert.match(first.work.failure_reason ?? "", /^repair_error:repair-boom/);
+    assert.equal(store.listAttempts(work.work_id).length, 1);
+    assert.equal(store.getWork(work.work_id)?.repair_count, 0);
+    const failAtt = store.listAttempts(work.work_id)[0];
+    assert.equal(failAtt.attempt_outcome, "FAIL");
+    assert.equal(failAtt.repair_applied, false);
+
+    for (let i = 0; i < 3; i += 1) {
+      assert.equal(runOnce(store, `w${i + 2}`, 5000), null);
+    }
+    store.close();
+
+    const again = ControlStore.open({ stateDir: dir });
+    assert.equal(again.getWork(work.work_id)?.state, "FAILED");
+    assert.equal(again.getWork(work.work_id)?.repair_count, 0);
+    assert.equal(again.listAttempts(work.work_id).length, 1);
+    assert.match(
+      again.getWork(work.work_id)?.failure_reason ?? "",
+      /^repair_error:repair-boom/,
+    );
+    assert.equal(runOnce(again, "wx", 5000), null);
+    again.close();
+  } finally {
+    unregisterTaskHandler(taskType);
+    cleanup(dir);
+  }
+});
+
+test("WP002-IR-007: missing execution spec → SETUP_ERROR + FAILED", () => {
+  const dir = tempState();
+  try {
+    const store = ControlStore.open({ stateDir: dir });
+    const project = store.createProject("nospec");
+    const work = store.createWork(project.project_id, "bare");
+    assert.equal(work.task_type, null);
+    const result = runOnce(store, "w1", 5000);
+    assert.ok(result);
+    assert.equal(result.failed, true);
+    assert.equal(result.work.state, "FAILED");
+    assert.match(result.work.failure_reason ?? "", /^setup_error:/);
+    const att = store.listAttempts(work.work_id)[0];
+    assert.ok(att.finished_at);
+    assert.equal(att.attempt_outcome, "SETUP_ERROR");
+    assert.equal(att.execution_ok, null);
+    assert.ok(att.verification_detail);
+    assert.equal(runOnce(store, "w2", 5000), null);
+    store.close();
+
+    const again = ControlStore.open({ stateDir: dir });
+    assert.equal(again.getWork(work.work_id)?.state, "FAILED");
+    assert.equal(again.listAttempts(work.work_id)[0].attempt_outcome, "SETUP_ERROR");
+    assert.equal(runOnce(again, "w3", 5000), null);
+    again.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("WP002-IR-007: unknown task type → SETUP_ERROR + FAILED", () => {
+  const dir = tempState();
+  try {
+    const store = ControlStore.open({ stateDir: dir });
+    const project = store.createProject("unk");
+    const work = store.createWork(project.project_id, "mystery", {
+      taskType: "no_such_handler",
+      taskInput: { x: 1 },
+      maxRepairs: 0,
+    });
+    const result = runOnce(store, "w1", 5000);
+    assert.ok(result);
+    assert.equal(result.failed, true);
+    assert.equal(result.work.state, "FAILED");
+    assert.match(result.work.failure_reason ?? "", /^setup_error:/);
+    const att = store.listAttempts(work.work_id)[0];
+    assert.equal(att.attempt_outcome, "SETUP_ERROR");
+    assert.equal(att.execution_ok, null);
+    assert.match(att.verification_detail ?? "", /Unknown task_type/);
+    assert.equal(runOnce(store, "w2", 5000), null);
+    store.close();
+  } finally {
     cleanup(dir);
   }
 });

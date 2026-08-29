@@ -396,10 +396,11 @@ export class ControlStore {
   ): WorkRecord {
     const completed = this.withTransaction(() => {
       const work = this.assertActiveLease(workId, leaseToken, workerId, now);
+      // Latest attempt overall (finished or not) — older PASS cannot authorize.
       const latest = this.db
         .prepare(
           `SELECT * FROM work_attempts
-           WHERE work_id = ? AND finished_at IS NOT NULL
+           WHERE work_id = ?
            ORDER BY attempt_number DESC
            LIMIT 1`,
         )
@@ -407,10 +408,16 @@ export class ControlStore {
       if (!latest) {
         throw new ControlError(
           "COMPLETION_GATE",
-          "No finished attempt available for completion",
+          "No attempt available for completion",
         );
       }
       const attempt = mapAttempt(latest);
+      if (attempt.finished_at == null) {
+        throw new ControlError(
+          "COMPLETION_GATE",
+          "Latest attempt is unfinished",
+        );
+      }
       if (
         attempt.execution_ok !== true ||
         attempt.verification_status !== "PASS" ||
@@ -418,7 +425,7 @@ export class ControlStore {
       ) {
         throw new ControlError(
           "COMPLETION_GATE",
-          "Completion requires execution_ok=true and verification PASS",
+          "Completion requires latest attempt execution_ok=true, verification PASS, and attempt_outcome PASS",
         );
       }
 
@@ -731,8 +738,11 @@ export class ControlStore {
       if (existing.finished_at != null) {
         throw new ControlError("INVALID", "Attempt already finished");
       }
+      // Combined gate: PASS only when execution succeeded AND verifier passed.
       const outcome: AttemptOutcome =
-        args.verificationStatus === "PASS" ? "PASS" : "FAIL";
+        args.executionOk === true && args.verificationStatus === "PASS"
+          ? "PASS"
+          : "FAIL";
       const ts = now.toISOString();
       this.db
         .prepare(
@@ -805,7 +815,7 @@ export class ControlStore {
   }
 
   /**
-   * Finalize an attempt that threw during execute() or verify().
+   * Finalize an attempt that failed during setup, execute(), or verify().
    * Preserves any known execution result; never claims crash certainty beyond ERROR.
    */
   finalizeAttemptError(
@@ -814,7 +824,7 @@ export class ControlStore {
       leaseToken: string;
       workerId: string;
       attemptId: string;
-      outcome: "EXEC_ERROR" | "VERIFY_ERROR";
+      outcome: "SETUP_ERROR" | "EXEC_ERROR" | "VERIFY_ERROR";
       executionOk: boolean | null;
       result: Record<string, unknown> | null;
       detail: string;

@@ -2,6 +2,7 @@ import type { ControlStore } from "../control/store.js";
 import { ControlError } from "../control/types.js";
 import type { AttemptRecord, WorkRecord } from "../control/types.js";
 import { getTaskHandler, requireExecutableWork } from "./tasks.js";
+import type { TaskHandler } from "./tasks.js";
 
 export interface WorkerRunResult {
   work: WorkRecord;
@@ -39,15 +40,50 @@ export function runOwnedWork(
     if (!current) {
       throw new ControlError("NOT_FOUND", "Work disappeared");
     }
-    const { taskType, taskInput } = requireExecutableWork(current);
-    const handler = getTaskHandler(taskType);
 
+    // Preparation is part of the durable attempt (WP002-IR-007).
     const attempt = store.beginExecutionAttempt(
       current.work_id,
       leaseToken,
       workerId,
       now(),
     );
+
+    let taskInput: Record<string, unknown>;
+    let handler: TaskHandler;
+    try {
+      const resolved = requireExecutableWork(current);
+      taskInput = resolved.taskInput;
+      handler = getTaskHandler(resolved.taskType);
+    } catch (err) {
+      store.finalizeAttemptError(
+        {
+          workId: current.work_id,
+          leaseToken,
+          workerId,
+          attemptId: attempt.attempt_id,
+          outcome: "SETUP_ERROR",
+          executionOk: null,
+          result: null,
+          detail: sanitizeError(err),
+        },
+        now(),
+      );
+      const failed = store.failWork(
+        current.work_id,
+        leaseToken,
+        workerId,
+        `setup_error:${sanitizeError(err)}`,
+        now(),
+      );
+      return {
+        work: failed,
+        completed: false,
+        failed: true,
+        attempts: store.listAttempts(current.work_id),
+        reason: "setup_error",
+      };
+    }
 
     let executionOk: boolean | null = null;
     let executionResult: Record<string, unknown> | null = null;
@@ -140,7 +176,11 @@ export function runOwnedWork(
     );
 
     // Completion gate: both execution success AND verification PASS.
-    if (finished.execution_ok === true && finished.verification_status === "PASS") {
+    if (
+      finished.execution_ok === true &&
+      finished.verification_status === "PASS" &&
+      finished.attempt_outcome === "PASS"
+    ) {
       const completed = store.completeWork(
         current.work_id,
         leaseToken,
@@ -156,7 +196,10 @@ export function runOwnedWork(
     }
 
     // verification PASS with execution failure → terminal FAILED (not COMPLETED)
-    if (finished.verification_status === "PASS" && finished.execution_ok !== true) {
+    if (
+      finished.verification_status === "PASS" &&
+      finished.execution_ok !== true
+    ) {
       const failed = store.failWork(
         current.work_id,
         leaseToken,
@@ -192,7 +235,27 @@ export function runOwnedWork(
       };
     }
 
-    const repair = handler.repair(taskInput);
+    let repair;
+    try {
+      repair = handler.repair(taskInput);
+    } catch (err) {
+      // Preserve finished FAIL attempt; do not increment repair_count.
+      const failed = store.failWork(
+        current.work_id,
+        leaseToken,
+        workerId,
+        `repair_error:${sanitizeError(err)}`,
+        now(),
+      );
+      return {
+        work: failed,
+        completed: false,
+        failed: true,
+        attempts: store.listAttempts(current.work_id),
+        reason: "repair_error",
+      };
+    }
+
     if (!repair) {
       const failed = store.failWork(
         current.work_id,
