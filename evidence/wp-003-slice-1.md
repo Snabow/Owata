@@ -15,9 +15,9 @@ Recorded: 2026-08-29
 | Label | SHA | Meaning |
 | --- | --- | --- |
 | **INDEPENDENT REVIEW TARGET SHA (R0)** | `992a4d286586bc1eab0776fcc96e2ea79c0f1346` | Slice 1 R0 HEAD reviewed under OWATA-REQ-0023 (REWORK) |
-| **IMPLEMENTATION SHA (R1)** | *(this commit’s tree SHA after R1 land; see git HEAD of the R1 implementation commit — not a later evidence-only amend)* | Slice 1 R1 rework resolving the four confirmed findings |
+| **IMPLEMENTATION SHA (R1)** | `56934e838e8b2aa7b031c4bd20134d29b2c236c5` | Slice 1 R1 rework resolving the four confirmed findings (code + DEC-003-002 + WP/evidence updates) |
 
-R0 evidence recorded implementation `aa3ed94…` then an evidence-only follow-up at `992a4d2…`. R1 must not create self-referential ambiguity by treating an evidence-only follow-up as the implementation SHA.
+Any later evidence-only follow-up that only fills this table is **not** the implementation SHA.
 
 ## Slice 1 R1 — Independent Review finding resolutions (OWATA-REQ-0024)
 
@@ -119,15 +119,29 @@ Program Control BUILD (+ install `DISPATCH_REVIEW` provenance) → Builder `sha-
 
 Request action sequence: `DECIDE, BUILD, REVIEW, DECIDE, REWORK, REVIEW, DECIDE`.
 
-## Tests (R1 target)
+## Tests (R1)
 
 ```text
 $ npm ci --ignore-scripts
+exit 0
+
 $ npm ls --all
+owata@0.0.1-genesis
++-- @types/node@22.20.1
+| `-- undici-types@6.21.0
+`-- typescript@5.9.3
+
 $ npm test
+74 pass / 0 fail
+
 $ npm run build
+exit 0
+
 $ git diff --check
+exit 0
+
 $ git diff --check 992a4d286586bc1eab0776fcc96e2ea79c0f1346..HEAD
+exit 0
 ```
 
 R1 regressions cover: incapable PC preflight, competing PC Decisions, PC process interruption, miswired Builder/PC identity, envelope replay conflict, exact duplicate idempotency, auto-review with/without PC provenance (including reopen), plus prior Slice 1 and WP-000/001/002 suites.
