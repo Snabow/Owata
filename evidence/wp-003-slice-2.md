@@ -102,4 +102,3 @@ git diff --check (working tree / post-fix tip) → PASS
 - Fix: .gitattributes rule evidence/artifacts/wp-003-slice-2/** -text; canonicalize retained text artifacts to LF under -text; update attempt2-result-envelope.json manifest hash to LF blob SHA-256 be763741… (was CRLF 41818124… which tripped git diff --check).
 - Paid real canary was NOT rerun.
 - manifest_content_sha256 convention: SHA-256 of Node JSON.stringify(manifestWithoutSelfHash, null, 2) + newline.
-
