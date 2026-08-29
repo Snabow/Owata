@@ -1,4 +1,4 @@
-﻿# WP-003 Slice 2 — Real Builder Binding + B1 Canary (evidence)
+# WP-003 Slice 2 — Real Builder Binding + B1 Canary (evidence)
 
 **Request lineage:** OWATA-REQ-0039 → OWATA-REQ-0040 → OWATA-REQ-0041 (REWORK) → OWATA-REQ-0042 (REWORK)
 **Branch:** `wp-003/slice-2-real-builder`
