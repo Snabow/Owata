@@ -31,13 +31,13 @@ test("sqlite init: WAL, schema version, idempotent reopen", () => {
   try {
     const a = ControlStore.open({ stateDir: dir });
     assert.equal(a.walEnabled(), true);
-    assert.equal(a.schemaVersion(), 1);
+    assert.equal(a.schemaVersion(), 2);
     assert.equal(existsSync(dbPath(dir)), true);
     a.close();
 
     const b = ControlStore.open({ stateDir: dir });
     assert.equal(b.walEnabled(), true);
-    assert.equal(b.schemaVersion(), 1);
+    assert.equal(b.schemaVersion(), 2);
     b.close();
   } finally {
     cleanup(dir);

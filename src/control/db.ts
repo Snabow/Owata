@@ -33,7 +33,6 @@ export function openDatabase(stateDir: string): DatabaseSync {
     let db: DatabaseSync | undefined;
     try {
       db = new DatabaseSync(path);
-      // busy_timeout must be set before other statements that may wait on locks.
       db.exec("PRAGMA busy_timeout = 30000;");
       db.exec("PRAGMA journal_mode = WAL;");
       db.exec("PRAGMA foreign_keys = ON;");
@@ -68,6 +67,25 @@ export function getSchemaVersion(db: DatabaseSync): number {
     throw new Error("schema_meta missing");
   }
   return row.version;
+}
+
+function tableColumns(db: DatabaseSync, table: string): Set<string> {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string;
+  }>;
+  return new Set(rows.map((r) => r.name));
+}
+
+function addColumnIfMissing(
+  db: DatabaseSync,
+  table: string,
+  column: string,
+  decl: string,
+): void {
+  const cols = tableColumns(db, table);
+  if (!cols.has(column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+  }
 }
 
 function migrate(db: DatabaseSync): void {
@@ -122,10 +140,58 @@ function migrate(db: DatabaseSync): void {
     | { version: number }
     | undefined;
   if (!existing) {
-    db.prepare("INSERT INTO schema_meta (id, version) VALUES (1, ?)").run(SCHEMA_VERSION);
-  } else if (existing.version !== SCHEMA_VERSION) {
+    db.prepare("INSERT INTO schema_meta (id, version) VALUES (1, 1)").run();
+  }
+
+  let version = getSchemaVersion(db);
+  if (version < 2) {
+    migrateToV2(db);
+    version = getSchemaVersion(db);
+  }
+  if (version !== SCHEMA_VERSION) {
     throw new Error(
-      `Unsupported schema version ${existing.version}; expected ${SCHEMA_VERSION}`,
+      `Unsupported schema version ${version}; expected ${SCHEMA_VERSION}`,
     );
   }
+}
+
+function migrateToV2(db: DatabaseSync): void {
+  addColumnIfMissing(db, "work_items", "task_type", "TEXT");
+  addColumnIfMissing(db, "work_items", "task_input", "TEXT");
+  addColumnIfMissing(
+    db,
+    "work_items",
+    "repair_count",
+    "INTEGER NOT NULL DEFAULT 0",
+  );
+  addColumnIfMissing(
+    db,
+    "work_items",
+    "max_repairs",
+    "INTEGER NOT NULL DEFAULT 1",
+  );
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS work_attempts (
+      attempt_id TEXT PRIMARY KEY,
+      work_id TEXT NOT NULL REFERENCES work_items(work_id),
+      attempt_number INTEGER NOT NULL,
+      worker_id TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      execution_ok INTEGER,
+      result_json TEXT,
+      verification_status TEXT,
+      verification_detail TEXT,
+      repair_applied INTEGER NOT NULL DEFAULT 0,
+      repair_note TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE (work_id, attempt_number)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_attempts_work
+      ON work_attempts(work_id, attempt_number);
+  `);
+
+  db.prepare("UPDATE schema_meta SET version = 2 WHERE id = 1").run();
 }

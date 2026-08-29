@@ -17,10 +17,12 @@ import {
 import { newId, nowIso } from "./ids.js";
 import {
   ControlError,
+  type AttemptRecord,
   type EventRecord,
   type EventType,
   type ProjectRecord,
   type ProjectState,
+  type VerificationStatus,
   type WorkRecord,
   type WorkState,
 } from "./types.js";
@@ -41,6 +43,10 @@ function mapProject(row: Record<string, unknown>): ProjectRecord {
 }
 
 function mapWork(row: Record<string, unknown>): WorkRecord {
+  let taskInput: Record<string, unknown> | null = null;
+  if (row.task_input != null && String(row.task_input).length > 0) {
+    taskInput = JSON.parse(String(row.task_input)) as Record<string, unknown>;
+  }
   return {
     work_id: String(row.work_id),
     project_id: String(row.project_id),
@@ -51,8 +57,40 @@ function mapWork(row: Record<string, unknown>): WorkRecord {
     lease_token: row.lease_token == null ? null : String(row.lease_token),
     lease_expires_at:
       row.lease_expires_at == null ? null : String(row.lease_expires_at),
+    task_type: row.task_type == null ? null : String(row.task_type),
+    task_input: taskInput,
+    repair_count: Number(row.repair_count ?? 0),
+    max_repairs: Number(row.max_repairs ?? 1),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
+  };
+}
+
+function mapAttempt(row: Record<string, unknown>): AttemptRecord {
+  return {
+    attempt_id: String(row.attempt_id),
+    work_id: String(row.work_id),
+    attempt_number: Number(row.attempt_number),
+    worker_id: String(row.worker_id),
+    started_at: String(row.started_at),
+    finished_at: row.finished_at == null ? null : String(row.finished_at),
+    execution_ok:
+      row.execution_ok == null ? null : Number(row.execution_ok) === 1,
+    result_json:
+      row.result_json == null || String(row.result_json).length === 0
+        ? null
+        : (JSON.parse(String(row.result_json)) as Record<string, unknown>),
+    verification_status:
+      row.verification_status == null
+        ? null
+        : (String(row.verification_status) as VerificationStatus),
+    verification_detail:
+      row.verification_detail == null
+        ? null
+        : String(row.verification_detail),
+    repair_applied: Number(row.repair_applied ?? 0) === 1,
+    repair_note: row.repair_note == null ? null : String(row.repair_note),
+    created_at: String(row.created_at),
   };
 }
 
@@ -184,12 +222,24 @@ export class ControlStore {
     return row ? mapProject(row) : null;
   }
 
-  createWork(projectId: string, title: string): WorkRecord {
+  createWork(
+    projectId: string,
+    title: string,
+    options?: {
+      taskType?: string;
+      taskInput?: Record<string, unknown>;
+      maxRepairs?: number;
+    },
+  ): WorkRecord {
     const project = this.getProject(projectId);
     if (!project) {
       throw new ControlError("NOT_FOUND", `Unknown project: ${projectId}`);
     }
     const ts = nowIso(this.clock);
+    const maxRepairs = options?.maxRepairs ?? 1;
+    if (maxRepairs < 0) {
+      throw new ControlError("INVALID", "maxRepairs must be >= 0");
+    }
     const work: WorkRecord = {
       work_id: newId("wrk"),
       project_id: projectId,
@@ -199,6 +249,10 @@ export class ControlStore {
       lease_owner: null,
       lease_token: null,
       lease_expires_at: null,
+      task_type: options?.taskType ?? null,
+      task_input: options?.taskInput ?? null,
+      repair_count: 0,
+      max_repairs: maxRepairs,
       created_at: ts,
       updated_at: ts,
     };
@@ -208,8 +262,10 @@ export class ControlStore {
         .prepare(
           `INSERT INTO work_items (
              work_id, project_id, title, state, attempt,
-             lease_owner, lease_token, lease_expires_at, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             lease_owner, lease_token, lease_expires_at,
+             task_type, task_input, repair_count, max_repairs,
+             created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           work.work_id,
@@ -220,13 +276,21 @@ export class ControlStore {
           null,
           null,
           null,
+          work.task_type,
+          work.task_input == null ? null : JSON.stringify(work.task_input),
+          work.repair_count,
+          work.max_repairs,
           work.created_at,
           work.updated_at,
         );
       this.insertEvent("work.created", {
         project_id: work.project_id,
         work_id: work.work_id,
-        payload: { title: work.title, state: work.state },
+        payload: {
+          title: work.title,
+          state: work.state,
+          task_type: work.task_type,
+        },
         ts,
       });
     });
@@ -444,6 +508,243 @@ export class ControlStore {
       .prepare("SELECT * FROM events ORDER BY ts ASC, event_id ASC")
       .all() as Record<string, unknown>[];
     return rows.map(mapEvent);
+  }
+
+  listAttempts(workId: string): AttemptRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM work_attempts
+         WHERE work_id = ?
+         ORDER BY attempt_number ASC`,
+      )
+      .all(workId) as Record<string, unknown>[];
+    return rows.map(mapAttempt);
+  }
+
+  assertActiveLease(
+    workId: string,
+    leaseToken: string,
+    workerId: string,
+    now: Date = this.clock(),
+  ): WorkRecord {
+    const work = this.getWork(workId);
+    if (!work) {
+      throw new ControlError("NOT_FOUND", `Unknown work: ${workId}`);
+    }
+    if (work.state !== "RUNNING") {
+      throw new ControlError(
+        "ILLEGAL_TRANSITION",
+        `Work is not RUNNING (${work.state})`,
+      );
+    }
+    if (
+      work.lease_token !== leaseToken ||
+      work.lease_owner !== workerId ||
+      !work.lease_expires_at
+    ) {
+      throw new ControlError("STALE_LEASE", "Lease token/owner mismatch");
+    }
+    if (Date.parse(work.lease_expires_at) <= now.getTime()) {
+      throw new ControlError("STALE_LEASE", "Lease has expired");
+    }
+    return work;
+  }
+
+  beginExecutionAttempt(
+    workId: string,
+    leaseToken: string,
+    workerId: string,
+    now: Date = this.clock(),
+  ): AttemptRecord {
+    let attempt: AttemptRecord | null = null;
+    this.withTransaction(() => {
+      const work = this.assertActiveLease(workId, leaseToken, workerId, now);
+      const row = this.db
+        .prepare(
+          `SELECT COALESCE(MAX(attempt_number), 0) AS max_n
+           FROM work_attempts WHERE work_id = ?`,
+        )
+        .get(workId) as { max_n: number };
+      const attemptNumber = Number(row.max_n) + 1;
+      const ts = now.toISOString();
+      const attemptId = newId("att");
+      this.db
+        .prepare(
+          `INSERT INTO work_attempts (
+             attempt_id, work_id, attempt_number, worker_id,
+             started_at, finished_at, execution_ok, result_json,
+             verification_status, verification_detail,
+             repair_applied, repair_note, created_at
+           ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?)`,
+        )
+        .run(attemptId, workId, attemptNumber, workerId, ts, ts);
+      this.insertEvent("work.execution_started", {
+        project_id: work.project_id,
+        work_id: workId,
+        payload: {
+          attempt_id: attemptId,
+          attempt_number: attemptNumber,
+          worker_id: workerId,
+        },
+        ts,
+      });
+      attempt = mapAttempt(
+        this.db
+          .prepare("SELECT * FROM work_attempts WHERE attempt_id = ?")
+          .get(attemptId) as Record<string, unknown>,
+      );
+    });
+    this.flushEventJsonl();
+    if (!attempt) {
+      throw new ControlError("INTERNAL", "Failed to begin attempt");
+    }
+    return attempt;
+  }
+
+  finishExecutionAttempt(
+    args: {
+      workId: string;
+      leaseToken: string;
+      workerId: string;
+      attemptId: string;
+      executionOk: boolean;
+      result: Record<string, unknown>;
+      verificationStatus: VerificationStatus;
+      verificationDetail: string;
+    },
+    now: Date = this.clock(),
+  ): AttemptRecord {
+    let finished: AttemptRecord | null = null;
+    this.withTransaction(() => {
+      const work = this.assertActiveLease(
+        args.workId,
+        args.leaseToken,
+        args.workerId,
+        now,
+      );
+      const existing = this.db
+        .prepare("SELECT * FROM work_attempts WHERE attempt_id = ?")
+        .get(args.attemptId) as Record<string, unknown> | undefined;
+      if (!existing || String(existing.work_id) !== args.workId) {
+        throw new ControlError("NOT_FOUND", "Unknown attempt");
+      }
+      const ts = now.toISOString();
+      this.db
+        .prepare(
+          `UPDATE work_attempts
+           SET finished_at = ?,
+               execution_ok = ?,
+               result_json = ?,
+               verification_status = ?,
+               verification_detail = ?
+           WHERE attempt_id = ?`,
+        )
+        .run(
+          ts,
+          args.executionOk ? 1 : 0,
+          JSON.stringify(args.result),
+          args.verificationStatus,
+          args.verificationDetail,
+          args.attemptId,
+        );
+
+      this.insertEvent("work.execution_finished", {
+        project_id: work.project_id,
+        work_id: args.workId,
+        payload: {
+          attempt_id: args.attemptId,
+          execution_ok: args.executionOk,
+          result: args.result,
+        },
+        ts,
+      });
+
+      if (args.verificationStatus === "PASS") {
+        this.insertEvent("work.verification_passed", {
+          project_id: work.project_id,
+          work_id: args.workId,
+          payload: {
+            attempt_id: args.attemptId,
+            detail: args.verificationDetail,
+          },
+          ts,
+        });
+      } else {
+        this.insertEvent("work.verification_failed", {
+          project_id: work.project_id,
+          work_id: args.workId,
+          payload: {
+            attempt_id: args.attemptId,
+            detail: args.verificationDetail,
+          },
+          ts,
+        });
+      }
+
+      finished = mapAttempt(
+        this.db
+          .prepare("SELECT * FROM work_attempts WHERE attempt_id = ?")
+          .get(args.attemptId) as Record<string, unknown>,
+      );
+    });
+    this.flushEventJsonl();
+    if (!finished) {
+      throw new ControlError("INTERNAL", "Failed to finish attempt");
+    }
+    return finished;
+  }
+
+  applyRepair(
+    args: {
+      workId: string;
+      leaseToken: string;
+      workerId: string;
+      nextInput: Record<string, unknown>;
+      note: string;
+    },
+    now: Date = this.clock(),
+  ): WorkRecord {
+    let updated: WorkRecord | null = null;
+    this.withTransaction(() => {
+      const work = this.assertActiveLease(
+        args.workId,
+        args.leaseToken,
+        args.workerId,
+        now,
+      );
+      if (work.repair_count >= work.max_repairs) {
+        throw new ControlError("REPAIR_BUDGET", "Repair budget exhausted");
+      }
+      const ts = now.toISOString();
+      const nextCount = work.repair_count + 1;
+      this.db
+        .prepare(
+          `UPDATE work_items
+           SET task_input = ?,
+               repair_count = ?,
+               updated_at = ?
+           WHERE work_id = ?`,
+        )
+        .run(JSON.stringify(args.nextInput), nextCount, ts, args.workId);
+
+      this.insertEvent("work.repair_applied", {
+        project_id: work.project_id,
+        work_id: args.workId,
+        payload: {
+          repair_count: nextCount,
+          max_repairs: work.max_repairs,
+          note: args.note,
+          task_input: args.nextInput,
+        },
+        ts,
+      });
+      updated = this.getWork(args.workId);
+    });
+    this.flushEventJsonl();
+    if (!updated) {
+      throw new ControlError("INTERNAL", "Repair did not update work");
+    }
+    return updated;
   }
 
   readJsonlEvents(): Array<Record<string, unknown>> {

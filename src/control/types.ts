@@ -1,14 +1,21 @@
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export type ProjectState = "ACTIVE";
 
 export type WorkState = "QUEUED" | "RUNNING" | "COMPLETED";
+
+export type VerificationStatus = "PASS" | "FAIL";
 
 export type EventType =
   | "project.created"
   | "work.created"
   | "work.claimed"
   | "work.lease_expired"
+  | "work.execution_started"
+  | "work.execution_finished"
+  | "work.verification_failed"
+  | "work.verification_passed"
+  | "work.repair_applied"
   | "work.completed";
 
 export interface ProjectRecord {
@@ -28,8 +35,28 @@ export interface WorkRecord {
   lease_owner: string | null;
   lease_token: string | null;
   lease_expires_at: string | null;
+  task_type: string | null;
+  task_input: Record<string, unknown> | null;
+  repair_count: number;
+  max_repairs: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface AttemptRecord {
+  attempt_id: string;
+  work_id: string;
+  attempt_number: number;
+  worker_id: string;
+  started_at: string;
+  finished_at: string | null;
+  execution_ok: boolean | null;
+  result_json: Record<string, unknown> | null;
+  verification_status: VerificationStatus | null;
+  verification_detail: string | null;
+  repair_applied: boolean;
+  repair_note: string | null;
+  created_at: string;
 }
 
 export interface EventRecord {
