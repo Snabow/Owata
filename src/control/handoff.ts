@@ -7,11 +7,13 @@ import {
   PROTOCOL_V1,
   canonicalEnvelopeIdentity,
   type CanonicalEnvelope,
+  type ControlRequestBody,
   type CyclePolicy,
   type CycleState,
   type EnvelopeKind,
   type FailureClass,
   type LogicalRole,
+  type PcDecisionBody,
   type PcDecisionKind,
 } from "./protocol.js";
 import type { CycleSnapshot } from "./adapters.js";
@@ -34,6 +36,7 @@ export interface CycleRecord {
   current_request_id: string | null;
   policy: CyclePolicy;
   policy_authorized_by_decision_id: string | null;
+  recovery_target_request_id: string | null;
   max_dispatch_retries: number;
   recovery_reason: string | null;
   created_at: string;
@@ -90,6 +93,10 @@ function mapCycle(row: Record<string, unknown>): CycleRecord {
       row.policy_authorized_by_decision_id == null
         ? null
         : String(row.policy_authorized_by_decision_id),
+    recovery_target_request_id:
+      row.recovery_target_request_id == null
+        ? null
+        : String(row.recovery_target_request_id),
     max_dispatch_retries: Number(row.max_dispatch_retries),
     recovery_reason:
       row.recovery_reason == null ? null : String(row.recovery_reason),
@@ -152,6 +159,7 @@ export class HandoffStore {
       current_request_id: cycle.current_request_id,
       policy: cycle.policy,
       policy_authorized_by_decision_id: cycle.policy_authorized_by_decision_id,
+      recovery_target_request_id: cycle.recovery_target_request_id,
       recovery_reason: cycle.recovery_reason,
     };
   }
@@ -179,8 +187,9 @@ export class HandoffStore {
              cycle_id, project_id, work_package_ref, base_sha,
              latest_candidate_sha, accepted_candidate_sha, state,
              current_request_id, policy_json, policy_authorized_by_decision_id,
-             max_dispatch_retries, recovery_reason, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, NULL, NULL, 'AWAITING_PC', NULL, ?, NULL, ?, NULL, ?, ?)`,
+             recovery_target_request_id, max_dispatch_retries, recovery_reason,
+             created_at, updated_at
+           ) VALUES (?, ?, ?, ?, NULL, NULL, 'AWAITING_PC', NULL, ?, NULL, NULL, ?, NULL, ?, ?)`,
         )
         .run(
           cycleId,
@@ -206,21 +215,132 @@ export class HandoffStore {
     });
   }
 
-  installPolicyFromDecision(
+  /**
+   * Single authoritative validation path for automatic-review / policy provenance.
+   * A Decision authorizes a policy only when it is the canonical ACCEPTED result of
+   * a Program Control dispatch for this cycle, with matching install_policy.
+   */
+  assertPolicyProvenance(
     cycleId: string,
     decisionEnvelopeId: string,
-    policy: CyclePolicy,
-  ): CycleRecord {
+    expectedPolicy: CyclePolicy,
+  ): CanonicalEnvelope {
     const decision = this.getEnvelope(decisionEnvelopeId);
     if (!decision || decision.kind !== "program_control_decision") {
       throw new ControlError(
         "POLICY_PROVENANCE",
-        "Policy install requires an accepted Program Control Decision",
+        "Policy requires a program_control_decision envelope",
+      );
+    }
+    if (decision.from_role !== "program_control") {
+      throw new ControlError(
+        "POLICY_PROVENANCE",
+        "Policy Decision from_role must be program_control",
       );
     }
     if (decision.cycle_id !== cycleId) {
       throw new ControlError("POLICY_PROVENANCE", "Policy decision cycle mismatch");
     }
+    if (!decision.request_id) {
+      throw new ControlError(
+        "POLICY_PROVENANCE",
+        "Policy Decision must reference a PC request_id",
+      );
+    }
+
+    const request = this.listEnvelopes(cycleId).find(
+      (e) =>
+        e.kind === "control_request" && e.request_id === decision.request_id,
+    ) as CanonicalEnvelope<ControlRequestBody> | undefined;
+    if (!request) {
+      throw new ControlError(
+        "POLICY_PROVENANCE",
+        "Policy Decision request envelope missing",
+      );
+    }
+    if (request.cycle_id !== cycleId) {
+      throw new ControlError(
+        "POLICY_PROVENANCE",
+        "Policy Decision request cycle mismatch",
+      );
+    }
+    if (request.body.target_role !== "program_control") {
+      throw new ControlError(
+        "POLICY_PROVENANCE",
+        "Policy Decision must correlate with a program_control request",
+      );
+    }
+    if (
+      request.body.action !== "DECIDE" &&
+      request.body.action !== "ADJUDICATE"
+    ) {
+      throw new ControlError(
+        "POLICY_PROVENANCE",
+        "Policy Decision must correlate with DECIDE/ADJUDICATE",
+      );
+    }
+
+    const accepted = this.acceptedDispatch(cycleId, decision.request_id);
+    if (!accepted) {
+      throw new ControlError(
+        "POLICY_PROVENANCE",
+        "Policy Decision is not the result of an ACCEPTED PC dispatch",
+      );
+    }
+    if (accepted.target_role !== "program_control") {
+      throw new ControlError(
+        "POLICY_PROVENANCE",
+        "Accepted provenance dispatch must target program_control",
+      );
+    }
+    if (accepted.result_envelope_id !== decision.envelope_id) {
+      throw new ControlError(
+        "POLICY_PROVENANCE",
+        "Accepted dispatch result_envelope_id must match Decision",
+      );
+    }
+
+    const body = decision.body as PcDecisionBody;
+    if (!body.install_policy) {
+      throw new ControlError(
+        "POLICY_PROVENANCE",
+        "Decision install_policy is required to authorize policy",
+      );
+    }
+    if (
+      body.install_policy.on_builder_candidate !==
+      expectedPolicy.on_builder_candidate
+    ) {
+      throw new ControlError(
+        "POLICY_PROVENANCE",
+        "Decision install_policy does not match the authorized policy",
+      );
+    }
+    return decision;
+  }
+
+  hasValidPolicyProvenance(
+    cycleId: string,
+    decisionEnvelopeId: string,
+    expectedPolicy: CyclePolicy,
+  ): boolean {
+    try {
+      this.assertPolicyProvenance(cycleId, decisionEnvelopeId, expectedPolicy);
+      return true;
+    } catch (err) {
+      if (err instanceof ControlError && err.code === "POLICY_PROVENANCE") {
+        return false;
+      }
+      throw err;
+    }
+  }
+
+  installPolicyFromDecision(
+    cycleId: string,
+    decisionEnvelopeId: string,
+    policy: CyclePolicy,
+  ): CycleRecord {
+    this.assertPolicyProvenance(cycleId, decisionEnvelopeId, policy);
     const ts = nowIso(() => this.store.now());
     this.store.db
       .prepare(
@@ -235,11 +355,10 @@ export class HandoffStore {
   mayAutoDispatchReview(cycle: CycleRecord): boolean {
     if (cycle.policy.on_builder_candidate !== "DISPATCH_REVIEW") return false;
     if (!cycle.policy_authorized_by_decision_id) return false;
-    const auth = this.getEnvelope(cycle.policy_authorized_by_decision_id);
-    return (
-      auth != null &&
-      auth.kind === "program_control_decision" &&
-      auth.cycle_id === cycle.cycle_id
+    return this.hasValidPolicyProvenance(
+      cycle.cycle_id,
+      cycle.policy_authorized_by_decision_id,
+      cycle.policy,
     );
   }
 
@@ -263,6 +382,7 @@ export class HandoffStore {
     next: CycleState,
     extra?: {
       recovery_reason?: string | null;
+      recovery_target_request_id?: string | null;
       latest_candidate_sha?: string | null;
       accepted_candidate_sha?: string | null;
       current_request_id?: string | null;
@@ -293,6 +413,11 @@ export class HandoffStore {
       this.store.db
         .prepare(`UPDATE cycles SET current_request_id = ? WHERE cycle_id = ?`)
         .run(extra.current_request_id ?? null, cycleId);
+    }
+    if (extra && "recovery_target_request_id" in extra) {
+      this.store.db
+        .prepare(`UPDATE cycles SET recovery_target_request_id = ? WHERE cycle_id = ?`)
+        .run(extra.recovery_target_request_id ?? null, cycleId);
     }
     this.store.appendEvent("cycle.transitioned", {
       project_id: current.project_id,
@@ -451,8 +576,13 @@ export class HandoffStore {
     }
     const attempt = (latest?.attempt_number ?? 0) + 1;
     if (attempt > cycle.max_dispatch_retries) {
+      const recoveryTarget =
+        args.targetRole === "builder" || args.targetRole === "reviewer"
+          ? args.requestId
+          : cycle.recovery_target_request_id;
       this.transition(args.cycleId, "RECOVERY_REQUIRED", {
         recovery_reason: "dispatch_retry_budget_exhausted",
+        recovery_target_request_id: recoveryTarget,
       });
       this.store.appendEvent("cycle.recovery_required", {
         project_id: cycle.project_id,
@@ -463,6 +593,7 @@ export class HandoffStore {
           request_id: args.requestId,
           reason: "dispatch_retry_budget_exhausted",
           attempts: attempt - 1,
+          recovery_target_request_id: recoveryTarget,
         },
       });
       throw new ControlError(
@@ -618,6 +749,15 @@ export class HandoffStore {
   }): void {
     const ts = nowIso(() => this.store.now());
     const cycle = this.requireCycle(args.cycleId);
+    const request = this.listEnvelopes(args.cycleId).find(
+      (e) => e.kind === "control_request" && e.request_id === args.requestId,
+    ) as CanonicalEnvelope<ControlRequestBody> | undefined;
+    const recoveryTarget =
+      request &&
+      (request.body.target_role === "builder" ||
+        request.body.target_role === "reviewer")
+        ? args.requestId
+        : cycle.recovery_target_request_id;
     this.store.appendEvent("cycle.capability_blocked", {
       project_id: cycle.project_id,
       work_id: null,
@@ -630,6 +770,7 @@ export class HandoffStore {
     });
     this.transition(args.cycleId, "RECOVERY_REQUIRED", {
       recovery_reason: "CAPABILITY_BLOCK",
+      recovery_target_request_id: recoveryTarget,
     });
   }
 

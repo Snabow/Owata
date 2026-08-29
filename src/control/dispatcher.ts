@@ -131,6 +131,29 @@ export class Dispatcher {
   }
 
   private ensureProgramControlRequest(cycle: CycleRecord): CycleRecord {
+    if (
+      cycle.state === "RECOVERY_REQUIRED" &&
+      !cycle.recovery_target_request_id &&
+      cycle.current_request_id
+    ) {
+      const maybe = this.handoff
+        .listEnvelopes(cycle.cycle_id)
+        .find(
+          (e) =>
+            e.kind === "control_request" &&
+            e.request_id === cycle.current_request_id,
+        ) as CanonicalEnvelope<ControlRequestBody> | undefined;
+      if (
+        maybe &&
+        (maybe.body.target_role === "builder" ||
+          maybe.body.target_role === "reviewer")
+      ) {
+        cycle = this.handoff.transition(cycle.cycle_id, cycle.state, {
+          recovery_target_request_id: maybe.request_id!,
+        });
+      }
+    }
+
     if (cycle.current_request_id) {
       const existing = this.handoff
         .listEnvelopes(cycle.cycle_id)
@@ -172,6 +195,7 @@ export class Dispatcher {
       stop_condition: "bounded fake PC; no real provider",
       authorized_by_decision_id: null,
       authorized_finding_ids: [],
+      retry_of_request_id: null,
     };
     return this.handoff.store.runImmediate(() => {
       this.handoff.persistEnvelope({
@@ -194,11 +218,12 @@ export class Dispatcher {
           request_id: requestId,
           action,
           target_role: "program_control",
+          recovery_target_request_id: cycle.recovery_target_request_id,
         },
       });
+      // Do not erase recovery_target_request_id when creating the PC ADJUDICATE request.
       return this.handoff.transition(cycle.cycle_id, "DISPATCHING_PC", {
         current_request_id: requestId,
-        recovery_reason: null,
       });
     });
   }
@@ -226,6 +251,10 @@ export class Dispatcher {
     const adapter = this.adapterFor(role);
     if (adapter.identity.role !== role) {
       const ts = nowIso(() => this.handoff.store.now());
+      const recoveryTarget =
+        role === "builder" || role === "reviewer"
+          ? request.request_id!
+          : cycle.recovery_target_request_id;
       this.handoff.store.appendEvent("cycle.result_rejected", {
         project_id: cycle.project_id,
         work_id: null,
@@ -240,6 +269,7 @@ export class Dispatcher {
       return {
         cycle: this.handoff.transition(cycle.cycle_id, "RECOVERY_REQUIRED", {
           recovery_reason: "ADAPTER_ROLE_MISMATCH",
+          recovery_target_request_id: recoveryTarget,
         }),
         action: "adapter_role_mismatch",
         detail: { configured: adapter.identity.role, expected: role },
@@ -455,6 +485,26 @@ export class Dispatcher {
           detail: { reason: err.message },
         };
       }
+      if (
+        err instanceof ControlError &&
+        (err.code === "POLICY_PROVENANCE" || err.code === "PROTOCOL")
+      ) {
+        try {
+          this.handoff.rejectResult({
+            dispatchId: dispatch.dispatch_id,
+            fenceToken: dispatch.fence_token,
+            failureClass: "RESULT_INVALID",
+            detail: err.message,
+          });
+        } catch {
+          // fence may already be non-CLAIMED
+        }
+        return {
+          cycle: this.handoff.requireCycle(cycle.cycle_id),
+          action: "result_invalid",
+          detail: { reason: err.message, code: err.code },
+        };
+      }
       throw err;
     }
   }
@@ -551,21 +601,15 @@ export class Dispatcher {
         return this.handoff.transition(cycle.cycle_id, "ACCEPTED", {
           accepted_candidate_sha: cycle.latest_candidate_sha,
           recovery_reason: null,
+          recovery_target_request_id: null,
           current_request_id: null,
         });
       case "RETRY":
-        if (!cycle.current_request_id) {
-          // Retry the last non-PC dispatch if present is out of scope; require prior request.
-          throw new ControlError("PROTOCOL", "RETRY requires a current request");
-        }
-        return this.handoff.transition(
-          cycle.cycle_id,
-          this.stateForCurrentRequest(cycle),
-          { recovery_reason: null },
-        );
+        return this.applySemanticRetry(cycle, env);
       case "REDESIGN":
         return this.handoff.transition(cycle.cycle_id, "AWAITING_PC", {
           recovery_reason: "REDESIGN",
+          recovery_target_request_id: null,
           current_request_id: null,
         });
       case "HUMAN_GATE":
@@ -577,13 +621,114 @@ export class Dispatcher {
         });
         return this.handoff.transition(cycle.cycle_id, "HUMAN_GATE", {
           current_request_id: null,
+          recovery_target_request_id: null,
         });
       case "ABORT":
         return this.handoff.transition(cycle.cycle_id, "ABORTED", {
           recovery_reason: "ABORT",
+          recovery_target_request_id: null,
           current_request_id: null,
         });
     }
+  }
+
+  /**
+   * Program Control semantic RETRY: new logical Control Request with new request_id,
+   * authorized by this Decision, retry_of_request_id = failed recovery target.
+   * Distinct from automatic same-request_id dispatch attempts.
+   */
+  private applySemanticRetry(
+    cycle: CycleRecord,
+    decision: CanonicalEnvelope<PcDecisionBody>,
+  ): CycleRecord {
+    const failedId = cycle.recovery_target_request_id;
+    if (!failedId) {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY requires a durable recovery_target_request_id",
+      );
+    }
+    if (failedId === cycle.current_request_id) {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY recovery target must not be the accepted PC recovery request",
+      );
+    }
+    const failed = this.handoff
+      .listEnvelopes(cycle.cycle_id)
+      .find(
+        (e) => e.kind === "control_request" && e.request_id === failedId,
+      ) as CanonicalEnvelope<ControlRequestBody> | undefined;
+    if (!failed || failed.cycle_id !== cycle.cycle_id) {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY recovery target Control Request missing or cycle mismatch",
+      );
+    }
+    const role = failed.body.target_role;
+    if (role !== "builder" && role !== "reviewer") {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY recovery target must be a Builder or Reviewer Control Request",
+      );
+    }
+    if (
+      failed.body.action !== "BUILD" &&
+      failed.body.action !== "REWORK" &&
+      failed.body.action !== "REVIEW"
+    ) {
+      throw new ControlError(
+        "PROTOCOL",
+        `RETRY cannot resume action ${failed.body.action}`,
+      );
+    }
+
+    const ts = nowIso(() => this.handoff.store.now());
+    const requestId = this.handoff.store.nextId("req");
+    const body: ControlRequestBody = {
+      action: failed.body.action,
+      target_role: role,
+      work_package_ref: failed.body.work_package_ref,
+      base_sha: failed.body.base_sha,
+      target_sha: failed.body.target_sha,
+      authoritative_references: [...failed.body.authoritative_references],
+      required_capabilities: [...failed.body.required_capabilities],
+      expected_result_kind: failed.body.expected_result_kind,
+      stop_condition: failed.body.stop_condition,
+      authorized_by_decision_id: decision.envelope_id,
+      authorized_finding_ids: [...failed.body.authorized_finding_ids],
+      retry_of_request_id: failedId,
+    };
+    this.handoff.persistEnvelope({
+      protocol: PROTOCOL_V1,
+      envelope_id: this.handoff.store.nextId("env"),
+      kind: "control_request",
+      cycle_id: cycle.cycle_id,
+      request_id: requestId,
+      from_role: "program_control",
+      to_role: role,
+      created_at: ts,
+      body,
+    });
+    this.handoff.store.appendEvent("cycle.request_persisted", {
+      project_id: cycle.project_id,
+      work_id: null,
+      ts,
+      payload: {
+        cycle_id: cycle.cycle_id,
+        request_id: requestId,
+        action: body.action,
+        authorized_by_decision_id: decision.envelope_id,
+        retry_of_request_id: failedId,
+      },
+    });
+    const nextState: CycleState =
+      role === "reviewer" ? "DISPATCHING_REVIEW" : "DISPATCHING_BUILD";
+    return this.handoff.transition(cycle.cycle_id, nextState, {
+      current_request_id: requestId,
+      recovery_reason: null,
+      recovery_target_request_id: null,
+    });
   }
 
   private persistRoleRequest(
@@ -609,6 +754,7 @@ export class Dispatcher {
       stop_condition: "bounded fake adapter; no real provider",
       authorized_by_decision_id: decision.envelope_id,
       authorized_finding_ids: decision.body.authorized_finding_ids,
+      retry_of_request_id: null,
     };
     this.handoff.persistEnvelope({
       protocol: PROTOCOL_V1,
@@ -636,6 +782,7 @@ export class Dispatcher {
     return this.handoff.transition(cycle.cycle_id, "DISPATCHING_BUILD", {
       current_request_id: requestId,
       recovery_reason: null,
+      recovery_target_request_id: null,
     });
   }
 
@@ -663,6 +810,7 @@ export class Dispatcher {
       stop_condition: "exact target_sha required; no Builder chat",
       authorized_by_decision_id: cycle.policy_authorized_by_decision_id,
       authorized_finding_ids: [],
+      retry_of_request_id: null,
     };
     this.handoff.persistEnvelope({
       protocol: PROTOCOL_V1,
@@ -740,23 +888,26 @@ export class Dispatcher {
         return this.handoff.transition(cycle.cycle_id, "ACCEPTED", {
           accepted_candidate_sha: cycle.latest_candidate_sha,
           recovery_reason: null,
+          recovery_target_request_id: null,
         });
       }
       if (choice === "ABORT") {
         return this.handoff.transition(cycle.cycle_id, "ABORTED", {
           recovery_reason: "ABORT",
+          recovery_target_request_id: null,
         });
       }
       if (choice === "RETRY") {
-        return this.handoff.transition(
-          cycle.cycle_id,
-          this.stateForCurrentRequest(cycle),
-          { recovery_reason: null },
-        );
+        // Human Gate RETRY returns to PC with recovery target preserved for a PC Decision RETRY.
+        return this.handoff.transition(cycle.cycle_id, "AWAITING_PC", {
+          recovery_reason: "HUMAN_GATE_RETRY",
+          current_request_id: null,
+        });
       }
       return this.handoff.transition(cycle.cycle_id, "AWAITING_PC", {
         recovery_reason: choice,
         current_request_id: null,
+        recovery_target_request_id: null,
       });
     });
     return { cycle: next, action: "human_gate_applied", detail: { choice } };

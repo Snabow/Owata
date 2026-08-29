@@ -113,6 +113,11 @@ export interface ControlRequestBody {
   stop_condition: string | null;
   authorized_by_decision_id: string | null;
   authorized_finding_ids: string[];
+  /**
+   * When set, this Control Request is a Program Control semantic RETRY of a
+   * prior exhausted logical request (new request_id; fresh automatic dispatch budget).
+   */
+  retry_of_request_id: string | null;
 }
 
 export interface BuilderResultBody {
@@ -287,6 +292,7 @@ function parseControlRequest(body: Record<string, unknown>): ControlRequestBody 
     stop_condition: optionalString(body, "stop_condition"),
     authorized_by_decision_id: optionalString(body, "authorized_by_decision_id"),
     authorized_finding_ids: findings,
+    retry_of_request_id: optionalString(body, "retry_of_request_id"),
   };
 }
 
