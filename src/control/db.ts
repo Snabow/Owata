@@ -13,13 +13,44 @@ export function eventsJsonlPath(stateDir: string): string {
   return join(stateDir, EVENTS_JSONL_FILENAME);
 }
 
+export function isSqliteBusy(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: string }).code;
+  const errcode = (err as { errcode?: number }).errcode;
+  return code === "ERR_SQLITE_ERROR" && (errcode === 5 || errcode === 6);
+}
+
+export function sleepMs(ms: number): void {
+  const sab = new SharedArrayBuffer(4);
+  const view = new Int32Array(sab);
+  Atomics.wait(view, 0, 0, ms);
+}
+
 export function openDatabase(stateDir: string): DatabaseSync {
-  const db = new DatabaseSync(dbPath(stateDir));
-  db.exec("PRAGMA journal_mode = WAL;");
-  db.exec("PRAGMA foreign_keys = ON;");
-  db.exec("PRAGMA busy_timeout = 30000;");
-  migrate(db);
-  return db;
+  const path = dbPath(stateDir);
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    let db: DatabaseSync | undefined;
+    try {
+      db = new DatabaseSync(path);
+      // busy_timeout must be set before other statements that may wait on locks.
+      db.exec("PRAGMA busy_timeout = 30000;");
+      db.exec("PRAGMA journal_mode = WAL;");
+      db.exec("PRAGMA foreign_keys = ON;");
+      migrate(db);
+      return db;
+    } catch (err) {
+      try {
+        db?.close();
+      } catch {
+        // ignore close errors after a failed open
+      }
+      if (!isSqliteBusy(err) || Date.now() >= deadline) {
+        throw err;
+      }
+      sleepMs(20);
+    }
+  }
 }
 
 export function verifyWalMode(db: DatabaseSync): boolean {

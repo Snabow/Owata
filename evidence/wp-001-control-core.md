@@ -42,7 +42,7 @@ Work: `QUEUED` → `RUNNING` → `COMPLETED`; `RUNNING` → `QUEUED` on lease re
 
 ### WP001-IR-001 (HIGH) — Concurrent JSONL projection duplication
 
-**Correction:** `flushEventJsonl()` now runs the full read-existing → select-pending → append-missing → mark-flushed sequence inside `BEGIN IMMEDIATE` / `COMMIT` (SQLite cross-process write lock). Append-only JSONL preserved; SQLite remains authoritative. Crash-after-append before COMMIT still converges on restart via event_id presence check (no re-append).
+**Correction:** `flushEventJsonl()` now runs the full read-existing → select-pending → append-missing → mark-flushed sequence inside `BEGIN IMMEDIATE` / `COMMIT` (SQLite cross-process write lock). `PRAGMA busy_timeout` is set before other statements; open/BEGIN retries on SQLITE_BUSY. Append-only JSONL preserved; SQLite remains authoritative. Crash-after-append before COMMIT still converges on restart via event_id presence check (no re-append).
 
 **Regression:**
 

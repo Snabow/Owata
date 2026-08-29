@@ -9,7 +9,9 @@ import { ensureStateDirectory } from "../state-directory.js";
 import {
   eventsJsonlPath,
   getSchemaVersion,
+  isSqliteBusy,
   openDatabase,
+  sleepMs,
   verifyWalMode,
 } from "./db.js";
 import { newId, nowIso } from "./ids.js";
@@ -114,7 +116,19 @@ export class ControlStore {
   }
 
   private withTransaction<T>(fn: () => T): T {
-    this.db.exec("BEGIN IMMEDIATE");
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      try {
+        this.db.exec("BEGIN IMMEDIATE");
+        break;
+      } catch (err) {
+        if (!isSqliteBusy(err) || Date.now() >= deadline) {
+          throw err;
+        }
+        sleepMs(10);
+      }
+    }
+
     try {
       const result = fn();
       this.db.exec("COMMIT");
