@@ -34,8 +34,9 @@ export interface DispatcherAdapters {
 
 /**
  * Context handed to the injectable Git reality verifier before a Builder
- * CANDIDATE_READY result may be accepted. Fake-adapter tests leave the hook
- * unset (or it is skipped for adapter_id "fake-builder").
+ * CANDIDATE_READY result may be accepted. Fake-adapter tests may leave the hook
+ * unset; adapter_id "fake-builder" is the only exemption. Every other Builder
+ * adapter requires a verifier (fail-closed when missing).
  */
 export interface GitRealityContext {
   cycle: CycleSnapshot;
@@ -348,6 +349,7 @@ export class Dispatcher {
         raw = await this.adapters.builder.build({
           cycle: this.handoff.snapshot(cycle),
           request,
+          envelopes: this.handoff.listEnvelopes(cycle.cycle_id),
           dispatch: {
             dispatch_id: dispatch.dispatch_id,
             attempt_number: dispatch.attempt_number,
@@ -364,10 +366,17 @@ export class Dispatcher {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const failureClass: FailureClass =
-        abort.signal.aborted && message.includes("lease")
-          ? "RESULT_STALE"
-          : "RUNTIME_ERROR";
+      let failureClass: FailureClass = "RUNTIME_ERROR";
+      if (err instanceof ControlError) {
+        failureClass = classifyFailure(err.code);
+      } else if (abort.signal.aborted) {
+        const reason = abort.signal.reason;
+        if (reason instanceof ControlError) {
+          failureClass = classifyFailure(reason.code);
+        } else {
+          failureClass = "RESULT_STALE";
+        }
+      }
       try {
         this.handoff.rejectResult({
           dispatchId: dispatch.dispatch_id,
@@ -412,8 +421,14 @@ export class Dispatcher {
         );
         dispatch.lease_expires_at = live.lease_expires_at;
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        abort.abort(message);
+        const reason =
+          err instanceof ControlError
+            ? err
+            : new ControlError(
+                "STALE_FENCE",
+                err instanceof Error ? err.message : String(err),
+              );
+        abort.abort(reason);
         clearInterval(timer);
       }
     }, ms);
@@ -618,7 +633,22 @@ export class Dispatcher {
     const body = parsed.body as BuilderResultBody;
     if (body.status === "CANDIDATE_READY" && body.candidate_sha) {
       const adapterId = this.adapters.builder.identity.adapter_id;
-      if (adapterId !== "fake-builder" && this.options.gitReality) {
+      if (adapterId !== "fake-builder") {
+        if (!this.options.gitReality) {
+          const reason =
+            "git reality verifier not configured for non-fake builder";
+          this.handoff.rejectResult({
+            dispatchId: dispatch.dispatch_id,
+            fenceToken: dispatch.fence_token,
+            failureClass: "RESULT_INVALID",
+            detail: `git reality: ${reason}`,
+          });
+          return {
+            cycle: this.handoff.requireCycle(cycle.cycle_id),
+            action: "result_invalid",
+            detail: { reason },
+          };
+        }
         try {
           await this.options.gitReality({
             cycle: this.handoff.snapshot(cycle),

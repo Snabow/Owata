@@ -61,7 +61,7 @@ export class GatewayBuilderAdapter implements BuilderAdapter {
   preflight(required: Capability[]): PreflightResult {
     const base = defaultPreflight(this.capabilities(), required);
     if (!base.ok) return base;
-    if (!this.probeCache.ok) {
+    if (!this.probeCache.ok || !this.probeCache.authReady) {
       return { ok: false, missing: ["command_execution"] };
     }
     return { ok: true, missing: [] };
@@ -116,6 +116,7 @@ export class GatewayBuilderAdapter implements BuilderAdapter {
         request: input.request,
         cycle: input.cycle,
         resultEnvelopeRelPath: artifacts.resultEnvelopePath,
+        envelopes: input.envelopes ?? [],
       });
       writeText(artifacts.instructionPath, compiled.text);
       writeText(

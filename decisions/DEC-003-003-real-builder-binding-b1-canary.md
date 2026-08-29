@@ -1,11 +1,11 @@
 # DEC-003-003 — Real Builder Binding + B1 Session Replacement Canary
 
-**ID:** DEC-003-003  
-**Status:** ACCEPTED  
-**Date:** 2026-08-29  
-**Work Package:** WP-003  
-**Authority:** Program Control — OWATA-REQ-0039  
-**Challenger input (advisory only):** OWATA-REQ-0038 — Claude Fable 5 (`ACCEPT_WITH_CHANGES`). Fable had no project authority.  
+**ID:** DEC-003-003
+**Status:** ACCEPTED
+**Date:** 2026-08-29
+**Work Package:** WP-003
+**Authority:** Program Control — OWATA-REQ-0039
+**Challenger input (advisory only):** OWATA-REQ-0038 — Claude Fable 5 (`ACCEPT_WITH_CHANGES`). Fable had no project authority.
 **Related:** `DEC-003-001`, `DEC-003-002`
 
 Convention: architecture decisions live in `decisions/DEC-<wp>-<seq>-<slug>.md`. Status is `PROPOSED` | `ACCEPTED` | `SUPERSEDED`. Chat history is not a Decision.

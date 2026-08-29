@@ -13,10 +13,12 @@ export {
 export {
   COMPILER_TEMPLATE_VERSION,
   compileBuilderInstruction,
+  resolveAuthorizedContext,
 } from "./prompt-compiler.js";
 export type {
   CompileBuilderInstructionArgs,
   CompiledBuilderInstruction,
+  ResolvedAuthorization,
 } from "./prompt-compiler.js";
 export {
   attemptWorktreeId,

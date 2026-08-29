@@ -57,6 +57,8 @@ export interface BuilderDispatchContext {
 export interface BuilderInput {
   cycle: CycleSnapshot;
   request: CanonicalEnvelope<ControlRequestBody>;
+  /** Durable canonical envelopes for the cycle (authority resolution). */
+  envelopes?: CanonicalEnvelope[];
   /** Present when the Dispatcher owns a live dispatch lease for this invocation. */
   dispatch?: BuilderDispatchContext;
   /** Aborted when the Dispatcher loses the lease (heartbeat renew failure). */

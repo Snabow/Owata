@@ -278,3 +278,50 @@ test("renewDispatchLease rejects EXPIRED lease", () => {
     cleanup(dir);
   }
 });
+
+test("renewDispatchLease atomic race: intervening state change yields STALE_FENCE and no renew event", () => {
+  const dir = tempState();
+  try {
+    const { store, handoff } = openHarness(dir);
+    const project = store.createProject("lease-race");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-003",
+    });
+    const requestId = "req_builder_1";
+    persistBuilderRequest(handoff, store, cycle.cycle_id, requestId);
+    handoff.transition(cycle.cycle_id, "DISPATCHING_BUILD", {
+      current_request_id: requestId,
+    });
+    const dispatch = handoff.claimDispatch({
+      cycleId: cycle.cycle_id,
+      requestId,
+      targetRole: "builder",
+      owner: "worker",
+      leaseMs: 5_000,
+    });
+    // Simulate recovery/supersession race: authoritative state leaves CLAIMED.
+    store.db
+      .prepare(`UPDATE dispatches SET state = 'RECOVERED' WHERE dispatch_id = ?`)
+      .run(dispatch.dispatch_id);
+    const before = store
+      .listEvents()
+      .filter((e) => e.event_type === "cycle.lease_renewed").length;
+    assert.throws(
+      () =>
+        handoff.renewDispatchLease(
+          dispatch.dispatch_id,
+          dispatch.fence_token,
+          5_000,
+        ),
+      (err: unknown) => err instanceof ControlError && err.code === "STALE_FENCE",
+    );
+    const after = store
+      .listEvents()
+      .filter((e) => e.event_type === "cycle.lease_renewed").length;
+    assert.equal(after, before);
+    store.close();
+  } finally {
+    cleanup(dir);
+  }
+});

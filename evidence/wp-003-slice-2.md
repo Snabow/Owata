@@ -1,8 +1,8 @@
 ﻿# WP-003 Slice 2 — Real Builder Binding + B1 Canary (evidence)
 
-**Request lineage:** OWATA-REQ-0039 (BLOCKED / policy qualification) → OWATA-REQ-0040 (RESUME)  
-**Branch:** `wp-003/slice-2-real-builder`  
-**Authoritative base:** `f3f77b0c1d6a11f1fcd0aac3adffd3fa3a6809ff`  
+**Request lineage:** OWATA-REQ-0039 (BLOCKED / policy qualification) → OWATA-REQ-0040 (RESUME)
+**Branch:** `wp-003/slice-2-real-builder`
+**Authoritative base:** `f3f77b0c1d6a11f1fcd0aac3adffd3fa3a6809ff`
 **Decision:** `decisions/DEC-003-003-real-builder-binding-b1-canary.md`
 
 ## Provider policy qualification (REQ-0039)

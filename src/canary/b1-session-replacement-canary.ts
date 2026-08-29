@@ -8,7 +8,8 @@ import {
   existsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ControlStore, Dispatcher, HandoffStore, PROTOCOL_V1 } from "../control/index.js";
 import {
   FakeProgramControlAdapter,
@@ -26,9 +27,14 @@ import {
   verifyCandidateGitReality,
   writeText,
 } from "../execution/index.js";
+import { persistCanaryEvidence } from "./evidence-export.js";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+function owataRepoRoot(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 }
 
 function initTaskRepo(repoPath: string): string {
@@ -127,6 +133,17 @@ async function main(): Promise<number> {
     );
     return 3;
   }
+
+  const repoRoot = owataRepoRoot();
+  const owataSourceSha = git(["rev-parse", "HEAD"], repoRoot);
+  const runId = `run_${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  const evidenceDir = join(
+    repoRoot,
+    "evidence",
+    "artifacts",
+    "wp-003-slice-2",
+    runId,
+  );
 
   const root = mkdtempSync(join(tmpdir(), "owata-b1-canary-"));
   const stateDir = join(root, "state");
@@ -228,6 +245,7 @@ async function main(): Promise<number> {
       request: request as never,
       cycle: handoff.snapshot(afterPc),
       resultEnvelopeRelPath: artifacts1.resultEnvelopePath,
+      envelopes: handoff.listEnvelopes(cycle.cycle_id),
     });
     writeText(artifacts1.instructionPath, compiled1.text);
     writeText(
@@ -284,6 +302,12 @@ async function main(): Promise<number> {
     const resumed = await dispatcher.runUntilStable(cycle.cycle_id, 12);
     const finalCycle = handoff.requireCycle(cycle.cycle_id);
     const latest = handoff.latestDispatch(cycle.cycle_id, requestId)!;
+    const artifacts2 = ensureExecutionDir(stateDir, latest.dispatch_id);
+    const meta2 = existsSync(artifacts2.metadataPath)
+      ? (JSON.parse(readFileSync(artifacts2.metadataPath, "utf8")) as {
+          prompt_hash?: string;
+        })
+      : {};
 
     let staleRejected = false;
     try {
@@ -322,14 +346,58 @@ async function main(): Promise<number> {
           ? readFileSync(join(repoPath, "README.md"), "utf8")
           : "";
 
+    const status =
+      latest.state === "ACCEPTED" &&
+      latest.attempt_number >= 2 &&
+      staleRejected &&
+      readme.includes("STATUS=READY")
+        ? "B1_CANARY_CANDIDATE"
+        : "FAIL";
+
+    // Persist durable evidence BEFORE temp-root cleanup. Fail closed if export fails.
+    const persisted = persistCanaryEvidence({
+      evidenceDir,
+      owataRepoRoot: repoRoot,
+      owataSourceSha,
+      runId,
+      cursorCliVersion: probe.agentVersion ?? null,
+      modelId,
+      requestId,
+      cycleId: cycle.cycle_id,
+      attempt1: {
+        dispatch_id: attempt1.dispatch_id,
+        attempt_number: attempt1.attempt_number,
+        fence_token: attempt1.fence_token,
+        state: expired.state,
+        pid: pid1,
+        killed: true,
+        prompt_hash: compiled1.promptHash,
+        instruction_path: artifacts1.instructionPath,
+        metadata_path: artifacts1.metadataPath,
+      },
+      attempt2: {
+        dispatch_id: latest.dispatch_id,
+        attempt_number: latest.attempt_number,
+        fence_token: latest.fence_token,
+        state: latest.state,
+        prompt_hash: meta2.prompt_hash ?? null,
+        instruction_path: artifacts2.instructionPath,
+        metadata_path: artifacts2.metadataPath,
+        result_envelope_path: artifacts2.resultEnvelopePath,
+      },
+      candidateSha: finalCycle.latest_candidate_sha,
+      taskRepoPath: repoPath,
+      stateDir,
+      store,
+      handoff,
+      humanContinuityActions: 0,
+      resumeFlagsUsed: false,
+      continueFlagsUsed: false,
+      status,
+    });
+
     const evidence = {
-      status:
-        latest.state === "ACCEPTED" &&
-        latest.attempt_number >= 2 &&
-        staleRejected &&
-        readme.includes("STATUS=READY")
-          ? "B1_CANARY_CANDIDATE"
-          : "FAIL",
+      status,
       cycle_id: cycle.cycle_id,
       request_id: requestId,
       attempt1_dispatch_id: attempt1.dispatch_id,
@@ -351,11 +419,17 @@ async function main(): Promise<number> {
       resumed_action: resumed.action,
       prompt_hash_attempt1: compiled1.promptHash,
       human_continuity_actions: 0,
+      evidence_dir: persisted.evidenceDir,
+      evidence_manifest_hash: persisted.manifestHash,
+      candidate_resolution_check: persisted.candidateResolutionCheck,
+      artifact_hashes: persisted.artifactHashes,
+      owata_source_sha: owataSourceSha,
+      run_id: runId,
     };
 
     console.log(JSON.stringify(evidence, null, 2));
 
-    // Cleanup worktrees best-effort
+    // Cleanup worktrees best-effort (after evidence export)
     try {
       removeAttemptWorktree({
         repoPath,
@@ -365,7 +439,8 @@ async function main(): Promise<number> {
       // ignore
     }
 
-    return evidence.status === "B1_CANARY_CANDIDATE" ? 0 : 1;
+    store.close();
+    return status === "B1_CANARY_CANDIDATE" ? 0 : 1;
   } finally {
     cleanup(root);
   }
