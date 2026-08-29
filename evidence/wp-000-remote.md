@@ -1,0 +1,72 @@
+# WP-000 Remote Verification Evidence
+
+Recorded: 2026-08-29
+
+## Remote configuration
+
+```text
+$ git remote -v
+origin	https://github.com/Snabow/Owata.git (fetch)
+origin	https://github.com/Snabow/Owata.git (push)
+```
+
+## Local / tracking status
+
+```text
+$ git status
+On branch main
+Your branch is up to date with 'origin/main'.
+
+nothing to commit, working tree clean
+```
+
+## Commit / tag resolution
+
+```text
+$ git rev-parse HEAD
+5a89de0ffec8a6c267261bd4d8243ffa74fb3edc
+
+$ git rev-parse origin/main
+5a89de0ffec8a6c267261bd4d8243ffa74fb3edc
+
+$ git rev-list -n 1 genesis
+5a89de0ffec8a6c267261bd4d8243ffa74fb3edc
+
+$ git rev-parse 'genesis^{commit}'
+5a89de0ffec8a6c267261bd4d8243ffa74fb3edc
+```
+
+Annotated tag object:
+
+```text
+$ git ls-remote origin refs/heads/main refs/tags/genesis
+5a89de0ffec8a6c267261bd4d8243ffa74fb3edc	refs/heads/main
+82165f97d09d19ba851943b0ade742adddf55587	refs/tags/genesis
+```
+
+`refs/tags/genesis` is an annotated tag whose target commit is `5a89de0ffec8a6c267261bd4d8243ffa74fb3edc`.
+
+## Remote contents (GitHub API)
+
+Paths present on `main`:
+
+```text
+.gitignore
+Project-OWATA-Genesis-Charter.md
+README.md
+evidence/wp-000-cli-tests.md
+evidence/wp-000-namespace.md
+package-lock.json
+package.json
+src/cli.ts
+tsconfig.json
+```
+
+Remote `main` commit SHA: `5a89de0ffec8a6c267261bd4d8243ffa74fb3edc`
+
+## Confirmation checklist
+
+- GitHub repository contains WP-000 files: YES
+- Remote HEAD matches intended local HEAD: YES (`5a89de0...`)
+- `genesis` exists remotely: YES
+- `genesis` resolves to intended Genesis commit: YES (`5a89de0...`)

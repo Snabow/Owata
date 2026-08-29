@@ -1,6 +1,7 @@
 # WP-000 Namespace Evidence
 
 Recorded: 2026-08-29
+Updated: 2026-08-29 (remote completion)
 
 ## npm package `owata`
 
@@ -25,20 +26,20 @@ Notes:
 - CLI binary name remains `owata` regardless of publish plan.
 - No rename and no scoped-package decision made in WP-000.
 
-## GitHub repository `Snabow/owata`
+## GitHub repository
 
-Command:
+Initial check target was `Snabow/owata` (404 / AVAILABLE).
 
-```bash
-gh api repos/Snabow/owata
+Human created:
+
+```text
+https://github.com/Snabow/Owata
 ```
 
-Result: HTTP 404 Not Found
+(private, empty at creation time)
 
-User `Snabow` exists. Repository `Snabow/owata` does not exist.
+Status: **CREATED**
 
-Availability: **AVAILABLE**
+Remote: `origin` → `https://github.com/Snabow/Owata.git`
 
-Remote creation: **HUMAN_ACTION_REQUIRED**
-
-Reason: creating the remote repository requires a public/private visibility decision that is not fixed by existing WP-000 / Genesis Charter policy. Local repository, CLI, tests, Genesis commit, and Genesis tag proceed without remote creation.
+`main` and annotated tag `genesis` pushed successfully.
