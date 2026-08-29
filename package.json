@@ -1,0 +1,25 @@
+{
+  "name": "owata",
+  "version": "0.0.1-genesis",
+  "description": "OWATA is an autonomous development platform that gets unfinished projects to done.",
+  "type": "module",
+  "bin": {
+    "owata": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "owata": "node dist/cli.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2"
+  }
+}
