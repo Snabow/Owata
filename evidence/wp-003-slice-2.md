@@ -95,3 +95,11 @@ git diff --check (working tree / post-fix tip) → PASS
 - REWORK_IMPLEMENTATION_SHA: `a10ba5398a96ca779850c61e002e28a236ba17be`
 - EVIDENCE_BUNDLE_SHA: `c1485f067888f8e2fca01db20194e1b383e7aea3`
 - REVIEW_TARGET: see RESULT `HEAD` (branch tip including this evidence identity note)
+
+## REQ-0044 evidence integrity (F07)
+
+- Cause: Git EOL normalization changed retained artifact bytes after manifest hashing (especially attempt2-result-envelope.json).
+- Fix: .gitattributes rule evidence/artifacts/wp-003-slice-2/** -text; restore original hashed byte representations (LF or CRLF per file to match existing manifest.artifact_hashes).
+- Paid real canary was NOT rerun.
+- manifest_content_sha256 convention: SHA-256 of Node JSON.stringify(manifestWithoutSelfHash, null, 2) + newline.
+
