@@ -1,0 +1,43 @@
+{
+  "run_id": "run_2026-08-29T16-28-01-680Z",
+  "status": "B1_CANARY_CANDIDATE",
+  "owata_source_sha": "a10ba5398a96ca779850c61e002e28a236ba17be",
+  "cursor_cli_version": "2026.08.25-3e8eec8",
+  "model_id": "composer-2.5",
+  "request_id": "req_15",
+  "cycle_id": "cyc_3",
+  "attempt1": {
+    "dispatch_id": "dsp_19",
+    "attempt_number": 1,
+    "fence_token": "fence_20",
+    "state": "EXPIRED",
+    "pid": 24916,
+    "killed": true,
+    "prompt_hash": "577fd47ea74f681629fd146640f3a712ba5105b779dd509410adea9381ba54bb"
+  },
+  "attempt2": {
+    "dispatch_id": "dsp_23",
+    "attempt_number": 2,
+    "fence_token": "fence_24",
+    "state": "ACCEPTED",
+    "prompt_hash": "eafa29b1961fd5b54b05992d4ea52808275b9c552a8510953c58a3aaf3ddfb35",
+    "fence_differs_from_attempt1": true
+  },
+  "candidate_sha": "c540306fa48da5df55f8ee920cf84c5612bbf335",
+  "human_continuity_actions": 0,
+  "resume_flags_used": false,
+  "continue_flags_used": false,
+  "candidate_resolution_check": "PASS",
+  "artifact_hashes": {
+    "durable-state.json": "6d6a76b257c597f7e88a632432b37cec8f7b7a0adab4cc7b40a24e2aee162c0a",
+    "attempt1-instruction.txt": "577fd47ea74f681629fd146640f3a712ba5105b779dd509410adea9381ba54bb",
+    "attempt1-metadata.json": "7d1f311d65749cf6a7124b8c9c9133a02087d9438f6426bc8aa2943dc93b2f60",
+    "attempt2-instruction.txt": "eafa29b1961fd5b54b05992d4ea52808275b9c552a8510953c58a3aaf3ddfb35",
+    "attempt2-metadata.json": "ffe70b9d3d884246df3055bda0ae7a5a9b413562e61e036e2f7c47da4aaba6b2",
+    "attempt2-result-envelope.json": "41818124ba4077f1b3216ddbe8b112ad81da2f33ca3e70ee4f29abfcaf31df72",
+    "task-repo.bundle": "234ad515ef7b778e59bb824cf495c46ecf740d0bc69fb7cd53adc6e03dc01690",
+    "invocation-flags.json": "49cb8af5cfd646f22e1b4a37c63c5b2c4f92226621a90296d7df804c0b3cffca"
+  },
+  "evidence_rel": "evidence/artifacts/wp-003-slice-2/run_2026-08-29T16-28-01-680Z",
+  "manifest_content_sha256": "79ce78e77d4a4aa6dd43c2abb2907627e203656c53b4855b251edac0bffcb866"
+}

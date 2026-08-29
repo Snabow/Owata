@@ -1,0 +1,15 @@
+# Builder Instruction
+
+Execute the canonical control request below. Do not paraphrase findings or invent scope.
+
+## Canonical Request
+{"cycle_id":"cyc_3","request_body":{"action":"BUILD","authoritative_references":["decisions/DEC-003-001-wp003-architecture.md","work-packages/WP-003-B1"],"authorized_by_decision_id":"env_12","authorized_finding_ids":[],"base_sha":"12ae45068859bee24f4847a3d298745cf135d2c3","expected_result_kind":"builder_result","required_capabilities":["command_execution","exact_checkout","repository_read","repository_write"],"retry_of_request_id":null,"stop_condition":"bounded fake adapter; no real provider","target_role":"builder","target_sha":"12ae45068859bee24f4847a3d298745cf135d2c3","work_package_ref":"WP-003-B1"},"request_id":"req_15","resolved_authorization":{"decision":{"authorized_finding_ids":[],"decision":"BUILD","envelope_id":"env_12","rationale":"canary build","rework_scope":null},"findings":[]},"result_envelope_path":"C:\\Users\\seq\\AppData\\Local\\Temp\\owata-b1-canary-DmtlBt\\state\\execution\\dsp_23\\result-envelope.json","template_version":"builder-instruction-v1"}
+
+## Resolved Authorization (durable envelopes only)
+{"decision":{"authorized_finding_ids":[],"decision":"BUILD","envelope_id":"env_12","rationale":"canary build","rework_scope":null},"findings":[]}
+
+## Runtime Obligations
+- Write a canonical builder_result envelope JSON to: C:\Users\seq\AppData\Local\Temp\owata-b1-canary-DmtlBt\state\execution\dsp_23\result-envelope.json
+- Commit repository changes in the active worktree when producing CANDIDATE_READY.
+- Include resolvable candidate_sha (git rev-parse HEAD after commit) when status is CANDIDATE_READY.
+- If CANARY_TASK.md exists at the worktree root, execute that file verbatim as the bounded task; do not expand scope beyond it and the envelope obligation.
