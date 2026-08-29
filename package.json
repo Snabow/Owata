@@ -11,11 +11,11 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node --test dist/state-directory.test.js",
+    "test": "npm run build && node --test \"dist/**/*.test.js\"",
     "owata": "node dist/cli.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.5.0"
   },
   "license": "UNLICENSED",
   "private": true,
