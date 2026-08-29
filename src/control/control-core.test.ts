@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { ControlError, ControlStore } from "./index.js";
+import { ControlError, ControlStore, SCHEMA_VERSION } from "./index.js";
 import { eventsJsonlPath, dbPath } from "./db.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -98,13 +98,13 @@ test("sqlite init: WAL, schema version, idempotent reopen", () => {
   try {
     const a = ControlStore.open({ stateDir: dir });
     assert.equal(a.walEnabled(), true);
-    assert.equal(a.schemaVersion(), 4);
+    assert.equal(a.schemaVersion(), SCHEMA_VERSION);
     assert.equal(existsSync(dbPath(dir)), true);
     a.close();
 
     const b = ControlStore.open({ stateDir: dir });
     assert.equal(b.walEnabled(), true);
-    assert.equal(b.schemaVersion(), 4);
+    assert.equal(b.schemaVersion(), SCHEMA_VERSION);
     b.close();
   } finally {
     cleanup(dir);

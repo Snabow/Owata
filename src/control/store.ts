@@ -31,6 +31,7 @@ import {
 export interface ControlStoreOptions {
   stateDir: string;
   clock?: () => Date;
+  idFactory?: (prefix?: string) => string;
 }
 
 function mapProject(row: Record<string, unknown>): ProjectRecord {
@@ -134,12 +135,19 @@ export class ControlStore {
   readonly stateDir: string;
   readonly db: DatabaseSync;
   private readonly clock: () => Date;
+  private readonly idFactory: (prefix?: string) => string;
   private closed = false;
 
-  private constructor(stateDir: string, db: DatabaseSync, clock: () => Date) {
+  private constructor(
+    stateDir: string,
+    db: DatabaseSync,
+    clock: () => Date,
+    idFactory: (prefix?: string) => string,
+  ) {
     this.stateDir = stateDir;
     this.db = db;
     this.clock = clock;
+    this.idFactory = idFactory;
   }
 
   static open(options: ControlStoreOptions): ControlStore {
@@ -158,9 +166,35 @@ export class ControlStore {
       options.stateDir,
       db,
       options.clock ?? (() => new Date()),
+      options.idFactory ?? newId,
     );
     store.flushEventJsonl();
     return store;
+  }
+
+  now(): Date {
+    return this.clock();
+  }
+
+  nextId(prefix?: string): string {
+    return this.idFactory(prefix);
+  }
+
+  appendEvent(
+    eventType: EventType,
+    args: {
+      project_id: string | null;
+      work_id: string | null;
+      payload: Record<string, unknown>;
+      ts?: string;
+    },
+  ): void {
+    this.insertEvent(eventType, {
+      project_id: args.project_id,
+      work_id: args.work_id,
+      payload: args.payload,
+      ts: args.ts ?? nowIso(this.clock),
+    });
   }
 
   schemaVersion(): number {
@@ -175,6 +209,10 @@ export class ControlStore {
     if (this.closed) return;
     this.db.close();
     this.closed = true;
+  }
+
+  runImmediate<T>(fn: () => T): T {
+    return this.withTransaction(fn);
   }
 
   private withTransaction<T>(fn: () => T): T {
@@ -208,7 +246,7 @@ export class ControlStore {
   createProject(name: string, state: ProjectState = "ACTIVE"): ProjectRecord {
     const ts = nowIso(this.clock);
     const project: ProjectRecord = {
-      project_id: newId("prj"),
+      project_id: this.idFactory("prj"),
       name,
       state,
       created_at: ts,
@@ -265,7 +303,7 @@ export class ControlStore {
       throw new ControlError("INVALID", "maxRepairs must be >= 0");
     }
     const work: WorkRecord = {
-      work_id: newId("wrk"),
+      work_id: this.idFactory("wrk"),
       project_id: projectId,
       title,
       state: "QUEUED",
@@ -363,7 +401,7 @@ export class ControlStore {
       const workId = String(row.work_id);
       const ts = now.toISOString();
       const expires = new Date(now.getTime() + leaseDurationMs).toISOString();
-      const token = newId("lease");
+      const token = this.idFactory("lease");
       const nextAttempt = Number(row.attempt) + 1;
 
       const result = this.db
@@ -691,7 +729,7 @@ export class ControlStore {
         .get(workId) as { max_n: number };
       const attemptNumber = Number(row.max_n) + 1;
       const ts = now.toISOString();
-      const attemptId = newId("att");
+      const attemptId = this.idFactory("att");
       this.db
         .prepare(
           `INSERT INTO work_attempts (
@@ -1157,7 +1195,7 @@ export class ControlStore {
       ts: string;
     },
   ): void {
-    const eventId = newId("evt");
+    const eventId = this.idFactory("evt");
     const payloadJson = serializeJson(args.payload, `event payload (${eventType})`);
     const maxRow = this.db
       .prepare(`SELECT COALESCE(MAX(event_seq), 0) AS m FROM events`)

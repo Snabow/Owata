@@ -166,6 +166,10 @@ function migrate(db: DatabaseSync, stateDir: string): void {
     migrateToV4(db, stateDir);
     version = getSchemaVersion(db);
   }
+  if (version === 4) {
+    migrateToV5(db);
+    version = getSchemaVersion(db);
+  }
 
   if (version !== SCHEMA_VERSION) {
     throw new Error(
@@ -264,6 +268,84 @@ function migrateToV4(db: DatabaseSync, stateDir: string): void {
   // Rebuild projection before bumping schema version so crash remigrates safely.
   rebuildJsonlProjectionFromSqlite(db, stateDir);
   db.prepare("UPDATE schema_meta SET version = 4 WHERE id = 1").run();
+}
+
+/**
+ * Schema v5: durable multi-role cycle / envelope / dispatch ownership.
+ * Does not change event_seq or JSONL projection contract.
+ */
+function migrateToV5(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cycles (
+      cycle_id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(project_id),
+      work_package_ref TEXT NOT NULL,
+      base_sha TEXT,
+      latest_candidate_sha TEXT,
+      accepted_candidate_sha TEXT,
+      state TEXT NOT NULL,
+      current_request_id TEXT,
+      policy_json TEXT NOT NULL,
+      max_dispatch_retries INTEGER NOT NULL DEFAULT 3,
+      recovery_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS envelopes (
+      envelope_id TEXT PRIMARY KEY,
+      cycle_id TEXT NOT NULL REFERENCES cycles(cycle_id),
+      kind TEXT NOT NULL,
+      request_id TEXT,
+      from_role TEXT NOT NULL,
+      to_role TEXT,
+      body_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_envelopes_cycle
+      ON envelopes(cycle_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_envelopes_request
+      ON envelopes(request_id);
+
+    CREATE TABLE IF NOT EXISTS dispatches (
+      dispatch_id TEXT PRIMARY KEY,
+      cycle_id TEXT NOT NULL REFERENCES cycles(cycle_id),
+      request_id TEXT NOT NULL,
+      attempt_number INTEGER NOT NULL,
+      fence_token TEXT NOT NULL,
+      owner TEXT NOT NULL,
+      target_role TEXT NOT NULL,
+      state TEXT NOT NULL,
+      lease_expires_at TEXT NOT NULL,
+      result_envelope_id TEXT,
+      failure_class TEXT,
+      failure_detail TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (cycle_id, request_id, attempt_number)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dispatches_request
+      ON dispatches(cycle_id, request_id, attempt_number);
+    CREATE INDEX IF NOT EXISTS idx_dispatches_lease
+      ON dispatches(state, lease_expires_at);
+
+    CREATE TABLE IF NOT EXISTS human_gates (
+      gate_id TEXT PRIMARY KEY,
+      cycle_id TEXT NOT NULL REFERENCES cycles(cycle_id),
+      decision_envelope_id TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      allowed_choices_json TEXT NOT NULL,
+      state TEXT NOT NULL,
+      selected_choice TEXT,
+      note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+
+  db.prepare("UPDATE schema_meta SET version = 5 WHERE id = 1").run();
 }
 
 /**

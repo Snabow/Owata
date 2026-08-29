@@ -1102,7 +1102,7 @@ test("WP002-IR-007 R5: real v3 legacy JSONL reconciles to event_seq order", () =
     assert.equal(before.includes("event_seq"), false);
 
     const store = ControlStore.open({ stateDir: dir });
-    assert.equal(store.schemaVersion(), 4);
+    assert.equal(store.schemaVersion(), SCHEMA_VERSION);
     const sqlite = store.listEvents();
     assert.equal(sqlite.length, 3);
     assert.deepEqual(
@@ -1214,7 +1214,7 @@ test("WP002-IR-007 R6: malformed destination JSONL rebuilds from SQLite", () => 
     writeFileSync(`${eventsJsonlPath(dir)}.aside`, "stale-aside\n", "utf8");
 
     const reopen = ControlStore.open({ stateDir: dir });
-    assert.equal(reopen.schemaVersion(), 4);
+    assert.equal(reopen.schemaVersion(), SCHEMA_VERSION);
     const sqlite = reopen.listEvents();
     const jsonl = reopen.readJsonlEvents();
     assert.deepEqual(

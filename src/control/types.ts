@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export type ProjectState = "ACTIVE";
 
@@ -38,7 +38,19 @@ export type EventType =
   | "work.repair_applied"
   | "work.attempt_abandoned"
   | "work.failed"
-  | "work.completed";
+  | "work.completed"
+  | "cycle.created"
+  | "cycle.request_persisted"
+  | "cycle.dispatch_claimed"
+  | "cycle.capability_blocked"
+  | "cycle.result_accepted"
+  | "cycle.result_rejected"
+  | "cycle.decision_persisted"
+  | "cycle.transitioned"
+  | "cycle.human_gate_created"
+  | "cycle.human_gate_answered"
+  | "cycle.dispatch_recovered"
+  | "cycle.recovery_required";
 
 export interface ProjectRecord {
   project_id: string;

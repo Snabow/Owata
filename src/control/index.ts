@@ -21,3 +21,17 @@ export type {
   WorkRecord,
   WorkState,
 } from "./types.js";
+export { PROTOCOL_V1, parseCanonicalEnvelope } from "./protocol.js";
+export type {
+  CanonicalEnvelope,
+  Capability,
+  CycleState,
+  FailureClass,
+} from "./protocol.js";
+export { HandoffStore } from "./handoff.js";
+export { Dispatcher } from "./dispatcher.js";
+export type {
+  ProgramControlAdapter,
+  BuilderAdapter,
+  ReviewerAdapter,
+} from "./adapters.js";
