@@ -42,6 +42,10 @@ Next: Bootstrap control core
 - Stack: TypeScript / Node.js / Git
 - Control Core, providers, queue, orchestrator, and web UI are out of scope for Genesis
 
+## Cursor workspace
+
+Open via `OWATA.code-workspace` (purple chrome). Notes: [docs/cursor-workspace.md](docs/cursor-workspace.md). Shared kit: `C:\apps\cursor-workspace`.
+
 ## Next: Control Core
 
 The next Work Package is **Control Core** (project/work state, durable persistence, event log, queue, state transition, orphan detection).

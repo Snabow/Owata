@@ -1,0 +1,25 @@
+{
+  "folders": [
+    {
+      "path": ".",
+      "name": "OWATA"
+    }
+  ],
+  "settings": {
+    "window.title": "OWATA — ${rootName}",
+    "workbench.startupEditor": "none",
+    "workbench.colorCustomizations": {
+      "titleBar.activeBackground": "#5B2A86",
+      "titleBar.activeForeground": "#FFFFFF",
+      "titleBar.inactiveBackground": "#3B1C57",
+      "titleBar.inactiveForeground": "#D8CBE3",
+      "activityBar.background": "#432064",
+      "activityBar.foreground": "#FFFFFF",
+      "activityBar.inactiveForeground": "#C4A8D8",
+      "statusBar.background": "#5B2A86",
+      "statusBar.foreground": "#FFFFFF",
+      "statusBar.noFolderBackground": "#5B2A86",
+      "statusBar.debuggingBackground": "#7A3A9A"
+    }
+  }
+}
