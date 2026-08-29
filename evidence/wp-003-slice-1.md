@@ -1,4 +1,4 @@
-# WP-003 Slice 1 Evidence — Protocol + Durable Cycle + Dispatcher
+# WP-003 Slice 1 Evidence  EProtocol + Durable Cycle + Dispatcher
 
 Recorded: 2026-08-29
 
@@ -21,15 +21,15 @@ Recorded: 2026-08-29
 | **INDEPENDENT REVIEW TARGET SHA (R2)** | `5414686a7864749655d54318efbfab0028d832b4` | R2 review HEAD; OWATA-REQ-0027 disposition **REWORK** (F01 request envelope roles; F02 accepted target; F03 Human Gate) |
 | **IMPLEMENTATION SHA (R3)** | `6c867ce46db4a3bf4bca922904722c2ae00e875e` | Slice 1 R3: complete PC request authority + failed-target proof + Human Gate recovery retention |
 | **INDEPENDENT REVIEW TARGET SHA (R3)** | `26add9c2f718281fa3e07512e9274d9d6d3d88df` | R3 review HEAD; OWATA-REQ-0030 disposition **REWORK** (F01 recovery lineage provenance) |
-| **IMPLEMENTATION SHA (R4)** | *(recorded after R4 land)* | Slice 1 R4: explicit recovery_lineage_id binding + stale-lineage rejection |
+| **IMPLEMENTATION SHA (R4)** | `2a8373b99e32fd0a7b82014c57e256ae4431cebc` | Slice 1 R4: explicit recovery_lineage_id binding + stale-lineage rejection |
 
 Any later evidence-only follow-up that only fills this table is **not** the implementation SHA.
 
-## Slice 1 R1 — Independent Review finding resolutions (OWATA-REQ-0024)
+## Slice 1 R1  EIndependent Review finding resolutions (OWATA-REQ-0024)
 
 All four confirmed findings are addressed in Control Core (fake adapters only; no real providers).
 
-### IR Finding 1 — Program Control durable dispatch — RESOLVED
+### IR Finding 1  EProgram Control durable dispatch  ERESOLVED
 
 Program Control is no longer a direct `decide()` bypass.
 
@@ -37,7 +37,7 @@ Logical PC requests are persisted with stable `request_id`, capability-preflight
 
 Cycle state model includes `DISPATCHING_PC`. Builder/Reviewer fencing is not weakened.
 
-### IR Finding 2 — Role / adapter authority — RESOLVED
+### IR Finding 2  ERole / adapter authority  ERESOLVED
 
 Before any adapter output becomes canonical, the Dispatcher enforces:
 
@@ -49,34 +49,34 @@ Before any adapter output becomes canonical, the Dispatcher enforces:
 
 Misbound / malicious schema-valid fakes are rejected before semantic authority. Builder self-approval via a PC Decision envelope is impossible. Adversarial regression tests cover both sides.
 
-### IR Finding 3 — Envelope full-identity idempotency — RESOLVED
+### IR Finding 3  EEnvelope full-identity idempotency  ERESOLVED
 
 `canonicalEnvelopeIdentity()` compares the full canonical persisted envelope (protocol, ids, roles, timestamps, body), not `body_json` alone.
 
-- Same `envelope_id` + exact same canonical envelope → idempotent
-- Same `envelope_id` + any differing canonical field → `DUPLICATE_ENVELOPE` conflict
+- Same `envelope_id` + exact same canonical envelope ↁEidempotent
+- Same `envelope_id` + any differing canonical field ↁE`DUPLICATE_ENVELOPE` conflict
 - Cross-cycle replay of an `envelope_id` cannot attach another cycle to a foreign envelope
 - Distinct `envelope_id` with same body remains a distinct envelope where protocol allows
 
-### IR Finding 4 — Automatic review PC provenance — RESOLVED
+### IR Finding 4  EAutomatic review PC provenance  ERESOLVED
 
 `createCycle()` rejects unproven `on_builder_candidate = DISPATCH_REVIEW`.
 
 Automatic Reviewer dispatch requires durable Program Control provenance: an accepted PC Decision may `install_policy`, and the cycle records `policy_authorized_by_decision_id`. Dispatcher auto-dispatches review only when `mayAutoDispatchReview()` reconstructs valid provenance from SQLite. Missing/invalid authorization prevents automatic review. Dispatcher still performs no semantic reasoning.
 
-### Process interruption — Program Control
+### Process interruption  EProgram Control
 
-Required R1 coverage: PC request persisted → dispatch claimed → process killed → lease expires → restart → same logical `request_id` → new attempt/fence → stale prior fence cannot apply Decision → cycle continues.
+Required R1 coverage: PC request persisted ↁEdispatch claimed ↁEprocess killed ↁElease expires ↁErestart ↁEsame logical `request_id` ↁEnew attempt/fence ↁEstale prior fence cannot apply Decision ↁEcycle continues.
 
 Builder process-kill coverage retained on the common fenced role path.
 
-## Slice 1 R2 — OWATA-REQ-0025 finding resolutions (OWATA-REQ-0026)
+## Slice 1 R2  EOWATA-REQ-0025 finding resolutions (OWATA-REQ-0026)
 
 Baseline / prior review HEAD: `a3be07aabe442c803e89b94ae7639113913bf103`.
 
-### F01 — Policy provenance / role authority — RESOLVED
+### F01  EPolicy provenance / role authority  ERESOLVED
 
-Automatic review authority is not “a PC-looking envelope exists.” It requires an **ACCEPTED Program Control dispatch** whose `result_envelope_id` is the exact Decision, with:
+Automatic review authority is not “a PC-looking envelope exists. EIt requires an **ACCEPTED Program Control dispatch** whose `result_envelope_id` is the exact Decision, with:
 
 - `kind = program_control_decision`, `from_role = program_control`
 - correlated DECIDE/ADJUDICATE Control Request on the same cycle
@@ -84,7 +84,7 @@ Automatic review authority is not “a PC-looking envelope exists.” It require
 
 `assertPolicyProvenance()` is the single validation path used by both `installPolicyFromDecision()` and `mayAutoDispatchReview()` (revalidated from SQLite after reopen). Pointer `policy_authorized_by_decision_id` alone is not proof.
 
-### F02 — Program Control semantic RETRY — RESOLVED
+### F02  EProgram Control semantic RETRY  ERESOLVED
 
 Two distinct retry concepts:
 
@@ -95,15 +95,15 @@ Two distinct retry concepts:
 
 Durable `cycles.recovery_target_request_id` retains the failed Builder/Reviewer request across PC ADJUDICATE setup and process reopen. Creating the PC recovery request does not erase it. RETRY creates a new role request and clears the recovery target. Invalid/missing recovery targets reject RETRY (no stranding on the accepted PC request).
 
-### PC killed-child fence regression — corrected
+### PC killed-child fence regression  Ecorrected
 
 The committed PC interruption test now seeds `DISPATCHING_PC` without a prior attempt, records the **child process** `dispatch_id`/`fence_token`, and asserts that exact child fence cannot accept after recovery.
 
-## Slice 1 R3 — OWATA-REQ-0027 finding resolutions (OWATA-REQ-0028)
+## Slice 1 R3  EOWATA-REQ-0027 finding resolutions (OWATA-REQ-0028)
 
 Baseline / prior review HEAD: `5414686a7864749655d54318efbfab0028d832b4`.
 
-### F01 — Canonical PC Control Request authority — RESOLVED
+### F01  ECanonical PC Control Request authority  ERESOLVED
 
 `assertPolicyProvenance()` now requires the correlated Control Request envelope fields:
 
@@ -115,7 +115,7 @@ Baseline / prior review HEAD: `5414686a7864749655d54318efbfab0028d832b4`.
 
 in addition to the accepted PC dispatch + exact `install_policy` match. The OWATA-REQ-0027-F01 exploit (Builder-facing envelope roles with PC body) is a regression.
 
-### F02 — Semantic RETRY failed-target proof — RESOLVED
+### F02  ESemantic RETRY failed-target proof  ERESOLVED
 
 `assertRetryableRecoveryTarget()` proves:
 
@@ -127,7 +127,7 @@ in addition to the accepted PC dispatch + exact `install_policy` match. The OWAT
 
 Accepted requests cannot be replayed via PC RETRY.
 
-### F03 — Human Gate preserves recovery target — RESOLVED
+### F03  EHuman Gate preserves recovery target  ERESOLVED
 
 Entering `HUMAN_GATE` no longer clears `recovery_target_request_id`. Human RETRY returns to Program Control with the target retained; PC then issues semantic RETRY. ACCEPT/ABORT still clear the target.
 
@@ -135,20 +135,20 @@ Entering `HUMAN_GATE` no longer clears `recovery_target_request_id`. Human RETRY
 
 ```text
 failed Builder/Reviewer request A
-→ durable failure evidence + recovery_target_request_id=A
-→ RECOVERY_REQUIRED
-→ PC ADJUDICATE (P)  [does not erase A]
-→ optional HUMAN_GATE (preserves A) → Human RETRY → AWAITING_PC
-→ PC Decision RETRY
-→ new request B (new request_id, retry_of_request_id=A, authorized_by_decision_id=Decision)
-→ DISPATCHING_BUILD | DISPATCHING_REVIEW
+ↁEdurable failure evidence + recovery_target_request_id=A
+ↁERECOVERY_REQUIRED
+ↁEPC ADJUDICATE (P)  [does not erase A]
+ↁEoptional HUMAN_GATE (preserves A) ↁEHuman RETRY ↁEAWAITING_PC
+ↁEPC Decision RETRY
+ↁEnew request B (new request_id, retry_of_request_id=A, authorized_by_decision_id=Decision)
+ↁEDISPATCHING_BUILD | DISPATCHING_REVIEW
 ```
 
 Distinct from automatic dispatch retry (same `request_id`, new attempt/fence).
 
 ## Schema v5
 
-Exact migration chain remains `1→2→3→4→5` (no version bump for R2/R3).
+Exact migration chain remains `1ↁEↁEↁEↁE` (no version bump for R2/R3).
 
 Fresh databases migrate through the chain to v5. Real v4 rows survive. Additive columns on open / migrateToV5:
 
@@ -159,10 +159,10 @@ Unknown version 0 and future versions still fail explicitly.
 
 Tables:
 
-- `cycles` — identity, Work Package ref, semantic state, candidate SHAs, durable transition policy + PC provenance, recovery target, retry budget
-- `envelopes` — append-only canonical `owata.handoff/1` envelopes (Control Request may carry `retry_of_request_id`)
-- `dispatches` — request-scoped attempt / fence / lease ownership (PC, Builder, Reviewer)
-- `human_gates` — durable Human Gate + response
+- `cycles`  Eidentity, Work Package ref, semantic state, candidate SHAs, durable transition policy + PC provenance, recovery target, retry budget
+- `envelopes`  Eappend-only canonical `owata.handoff/1` envelopes (Control Request may carry `retry_of_request_id`)
+- `dispatches`  Erequest-scoped attempt / fence / lease ownership (PC, Builder, Reviewer)
+- `human_gates`  Edurable Human Gate + response
 
 WP-002 worker-loop `FAILED` semantics are unchanged.
 
@@ -198,11 +198,11 @@ Dispatch-specific ownership (not WP-001 work queue) applies uniformly to Program
 - only the current CLAIMED fence may accept a result
 - expired leases become EXPIRED; a new attempt may be claimed
 - an already ACCEPTED request cannot be claimed or accepted again
-- retry-budget exhaustion → `RECOVERY_REQUIRED` (not ABORT)
+- retry-budget exhaustion ↁE`RECOVERY_REQUIRED` (not ABORT)
 
 ## Full fake cycle
 
-Program Control BUILD (+ install `DISPATCH_REVIEW` provenance) → Builder `sha-a` → Reviewer REWORK `WP003-TEST-001` → Program Control REWORK scoped to that finding → Builder `sha-b` → Reviewer PASS at `sha-b` → Program Control HUMAN_GATE → Control Core answer ACCEPT → cycle ACCEPTED.
+Program Control BUILD (+ install `DISPATCH_REVIEW` provenance) ↁEBuilder `sha-a` ↁEReviewer REWORK `WP003-TEST-001` ↁEProgram Control REWORK scoped to that finding ↁEBuilder `sha-b` ↁEReviewer PASS at `sha-b` ↁEProgram Control HUMAN_GATE ↁEControl Core answer ACCEPT ↁEcycle ACCEPTED.
 
 Request action sequence: `DECIDE, BUILD, REVIEW, DECIDE, REWORK, REVIEW, DECIDE`.
 
@@ -231,13 +231,13 @@ $ git diff --check 5414686a7864749655d54318efbfab0028d832b4..HEAD
 exit 0
 ```
 
-R3 regressions cover F01 forged request envelope roles, F02 accepted-target / no-evidence rejection, and F03 Human Gate recovery retention through reopen → Human RETRY → PC RETRY. Prior suites remain green.
+R3 regressions cover F01 forged request envelope roles, F02 accepted-target / no-evidence rejection, and F03 Human Gate recovery retention through reopen ↁEHuman RETRY ↁEPC RETRY. Prior suites remain green.
 
-## Slice 1 R4 — OWATA-REQ-0030-F01 recovery lineage provenance
+## Slice 1 R4  EOWATA-REQ-0030-F01 recovery lineage provenance
 
 Baseline / prior review HEAD: `26add9c2f718281fa3e07512e9274d9d6d3d88df`.
 
-### OWATA-REQ-0030-F01 — RESOLVED
+### OWATA-REQ-0030-F01  ERESOLVED
 
 Semantic RETRY now requires an explicit durable **recovery lineage**:
 
@@ -245,7 +245,7 @@ Semantic RETRY now requires an explicit durable **recovery lineage**:
 - `enterRecovery()` creates a new lineage id, binds `recovery_target_request_id`, sets `recovery_reason`, and appends authoritative `cycle.recovery_required` with the same identity fields
 - `assertRetryableRecoveryTarget()` requires active lineage id, matching durable lineage event (`cycle_id` / `recovery_lineage_id` / `request_id` / `reason`), no ACCEPTED result, and failure evidence compatible with the current lineage
 - Historical failure evidence for request A cannot authorize RETRY while the current lineage identifies request B (stale-lineage regression)
-- Human Gate preserves both `recovery_target_request_id` and `recovery_lineage_id` through reopen → Human RETRY → PC RETRY
+- Human Gate preserves both `recovery_target_request_id` and `recovery_lineage_id` through reopen ↁEHuman RETRY ↁEPC RETRY
 - ACCEPT / ABORT / REDESIGN / successful semantic RETRY clear target + lineage together
 - Later genuine recovery supersedes the prior lineage id
 
@@ -253,16 +253,16 @@ Semantic RETRY now requires an explicit durable **recovery lineage**:
 
 ```text
 Builder/Reviewer failure
-→ enterRecovery(requestId=A)  # new recovery_lineage_id = L-A
-→ RECOVERY_REQUIRED (target=A, lineage=L-A)
-→ PC ADJUDICATE (lineage preserved)
-→ optional HUMAN_GATE (lineage preserved; reopen-safe)
-→ optional Human RETRY → AWAITING_PC (lineage preserved)
-→ PC Decision RETRY
-→ assertRetryableRecoveryTarget (lineage event + failure evidence)
-→ new Control Request B (retry_of_request_id=A, authorized_by_decision_id=RETRY Decision)
-→ clear recovery_target + recovery_lineage
-→ Builder/Reviewer proceeds with fresh dispatch budget
+ↁEenterRecovery(requestId=A)  # new recovery_lineage_id = L-A
+ↁERECOVERY_REQUIRED (target=A, lineage=L-A)
+ↁEPC ADJUDICATE (lineage preserved)
+ↁEoptional HUMAN_GATE (lineage preserved; reopen-safe)
+ↁEoptional Human RETRY ↁEAWAITING_PC (lineage preserved)
+ↁEPC Decision RETRY
+ↁEassertRetryableRecoveryTarget (lineage event + failure evidence)
+ↁEnew Control Request B (retry_of_request_id=A, authorized_by_decision_id=RETRY Decision)
+ↁEclear recovery_target + recovery_lineage
+ↁEBuilder/Reviewer proceeds with fresh dispatch budget
 ```
 
 ### Validation (R4)
