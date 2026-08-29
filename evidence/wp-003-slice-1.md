@@ -19,7 +19,7 @@ Recorded: 2026-08-29
 | **INDEPENDENT REVIEW TARGET SHA (R1)** | `a3be07aabe442c803e89b94ae7639113913bf103` | R1 review HEAD; OWATA-REQ-0025 disposition **REWORK** |
 | **IMPLEMENTATION SHA (R2)** | `00694824e0186ebf8cd0939901227c1cc46014a0` | Slice 1 R2: F01 policy provenance + F02 PC semantic RETRY + killed-child fence regression |
 | **INDEPENDENT REVIEW TARGET SHA (R2)** | `5414686a7864749655d54318efbfab0028d832b4` | R2 review HEAD; OWATA-REQ-0027 disposition **REWORK** (F01 request envelope roles; F02 accepted target; F03 Human Gate) |
-| **IMPLEMENTATION SHA (R3)** | *(recorded after R3 land)* | Slice 1 R3: complete PC request authority + failed-target proof + Human Gate recovery retention |
+| **IMPLEMENTATION SHA (R3)** | `6c867ce46db4a3bf4bca922904722c2ae00e875e` | Slice 1 R3: complete PC request authority + failed-target proof + Human Gate recovery retention |
 
 Any later evidence-only follow-up that only fills this table is **not** the implementation SHA.
 
