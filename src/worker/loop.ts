@@ -2,7 +2,7 @@ import type { ControlStore } from "../control/store.js";
 import { ControlError } from "../control/types.js";
 import type { AttemptRecord, WorkRecord } from "../control/types.js";
 import { getTaskHandler, requireExecutableWork } from "./tasks.js";
-import type { TaskHandler } from "./tasks.js";
+import type { RepairResult, TaskHandler } from "./tasks.js";
 
 export interface WorkerRunResult {
   work: WorkRecord;
@@ -15,6 +15,62 @@ export interface WorkerRunResult {
 function sanitizeError(err: unknown): string {
   if (err instanceof Error) return err.message.slice(0, 500);
   return String(err).slice(0, 500);
+}
+
+function isStaleLease(err: unknown): boolean {
+  return err instanceof ControlError && err.code === "STALE_LEASE";
+}
+
+/**
+ * Terminalize under current lease. Never converts STALE_LEASE into a mutation.
+ */
+function failUnderLease(
+  store: ControlStore,
+  workId: string,
+  leaseToken: string,
+  workerId: string,
+  failureReason: string,
+  resultReason: string,
+  now: Date,
+): WorkerRunResult {
+  try {
+    const failed = store.failWork(
+      workId,
+      leaseToken,
+      workerId,
+      failureReason,
+      now,
+    );
+    return {
+      work: failed,
+      completed: false,
+      failed: true,
+      attempts: store.listAttempts(workId),
+      reason: resultReason,
+    };
+  } catch (err) {
+    if (isStaleLease(err)) throw err;
+    throw err;
+  }
+}
+
+function readRepairResult(repair: RepairResult): {
+  nextInput: Record<string, unknown>;
+  note: string;
+} {
+  const nextInput = repair.nextInput;
+  const note = repair.note;
+  if (
+    nextInput == null ||
+    typeof nextInput !== "object" ||
+    Array.isArray(nextInput)
+  ) {
+    throw new ControlError("REPAIR_RESULT", "invalid repair nextInput");
+  }
+  if (typeof note !== "string") {
+    throw new ControlError("REPAIR_RESULT", "invalid repair note");
+  }
+  return { nextInput, note };
 }
 
 /**
@@ -69,24 +125,27 @@ export function runOwnedWork(
         },
         now(),
       );
-      const failed = store.failWork(
+      return failUnderLease(
+        store,
         current.work_id,
         leaseToken,
         workerId,
         `setup_error:${sanitizeError(err)}`,
+        "setup_error",
         now(),
       );
-      return {
-        work: failed,
-        completed: false,
-        failed: true,
-        attempts: store.listAttempts(current.work_id),
-        reason: "setup_error",
-      };
     }
 
     let executionOk: boolean | null = null;
     let executionResult: Record<string, unknown> | null = null;
+
+    store.recordExecutionStarted(
+      current.work_id,
+      leaseToken,
+      workerId,
+      attempt.attempt_id,
+      now(),
+    );
 
     try {
       const execution = handler.execute(taskInput);
@@ -106,20 +165,15 @@ export function runOwnedWork(
         },
         now(),
       );
-      const failed = store.failWork(
+      return failUnderLease(
+        store,
         current.work_id,
         leaseToken,
         workerId,
         `execution_error:${sanitizeError(err)}`,
+        "execution_error",
         now(),
       );
-      return {
-        work: failed,
-        completed: false,
-        failed: true,
-        attempts: store.listAttempts(current.work_id),
-        reason: "execution_error",
-      };
     }
 
     let verificationStatus: "PASS" | "FAIL";
@@ -145,20 +199,15 @@ export function runOwnedWork(
         },
         now(),
       );
-      const failed = store.failWork(
+      return failUnderLease(
+        store,
         current.work_id,
         leaseToken,
         workerId,
         `verification_error:${sanitizeError(err)}`,
+        "verification_error",
         now(),
       );
-      return {
-        work: failed,
-        completed: false,
-        failed: true,
-        attempts: store.listAttempts(current.work_id),
-        reason: "verification_error",
-      };
     }
 
     const finished = store.finishExecutionAttempt(
@@ -200,90 +249,69 @@ export function runOwnedWork(
       finished.verification_status === "PASS" &&
       finished.execution_ok !== true
     ) {
-      const failed = store.failWork(
+      return failUnderLease(
+        store,
         current.work_id,
         leaseToken,
         workerId,
         "completion_gate:verification_pass_without_execution_ok",
+        "completion_gate_rejected",
         now(),
       );
-      return {
-        work: failed,
-        completed: false,
-        failed: true,
-        attempts: store.listAttempts(current.work_id),
-        reason: "completion_gate_rejected",
-      };
     }
 
     // Verification FAIL — may repair if budget remains.
     const latest = store.getWork(current.work_id)!;
     if (latest.repair_count >= latest.max_repairs) {
-      const failed = store.failWork(
+      return failUnderLease(
+        store,
         current.work_id,
         leaseToken,
         workerId,
         "repair_budget_exhausted",
+        "repair_budget_exhausted",
         now(),
       );
-      return {
-        work: failed,
-        completed: false,
-        failed: true,
-        attempts: store.listAttempts(current.work_id),
-        reason: "repair_budget_exhausted",
-      };
     }
 
-    let repair;
+    // Obtain + validate + apply repair; terminalize non-fencing failures (IR-009).
     try {
-      repair = handler.repair(taskInput);
+      const repair = handler.repair(taskInput);
+      if (!repair) {
+        return failUnderLease(
+          store,
+          current.work_id,
+          leaseToken,
+          workerId,
+          "no_repair_available",
+          "no_repair_available",
+          now(),
+        );
+      }
+      const { nextInput, note } = readRepairResult(repair);
+      store.applyRepair(
+        {
+          workId: current.work_id,
+          leaseToken,
+          workerId,
+          attemptId: finished.attempt_id,
+          nextInput,
+          note,
+        },
+        now(),
+      );
     } catch (err) {
-      // Preserve finished FAIL attempt; do not increment repair_count.
-      const failed = store.failWork(
+      if (isStaleLease(err)) throw err;
+      return failUnderLease(
+        store,
         current.work_id,
         leaseToken,
         workerId,
         `repair_error:${sanitizeError(err)}`,
+        "repair_error",
         now(),
       );
-      return {
-        work: failed,
-        completed: false,
-        failed: true,
-        attempts: store.listAttempts(current.work_id),
-        reason: "repair_error",
-      };
     }
-
-    if (!repair) {
-      const failed = store.failWork(
-        current.work_id,
-        leaseToken,
-        workerId,
-        "no_repair_available",
-        now(),
-      );
-      return {
-        work: failed,
-        completed: false,
-        failed: true,
-        attempts: store.listAttempts(current.work_id),
-        reason: "no_repair_available",
-      };
-    }
-
-    store.applyRepair(
-      {
-        workId: current.work_id,
-        leaseToken,
-        workerId,
-        attemptId: finished.attempt_id,
-        nextInput: repair.nextInput,
-        note: repair.note,
-      },
-      now(),
-    );
   }
 }
 

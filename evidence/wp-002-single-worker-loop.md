@@ -1,12 +1,12 @@
 # WP-002 Evidence — Single Worker Completion Loop
 
-Recorded: 2026-08-29 (REWORK R2)
+Recorded: 2026-08-29 (REWORK R3)
 
 ## Baseline
 
 - `main @ 8f6d7387085e2e012f1f2bd698482cbd68e14b8a`
 - Branch: `wp-002/single-worker-completion-loop`
-- Prior R1 candidate: `1e2ef5926596d3d9c828a42e43a7969ce6a7fa5e`
+- Prior R2 candidate: `103b66a4e29f8d74256adc76cf2204ade1c72e7d`
 - WP-001 history not rewritten
 
 ## Worker loop
@@ -14,75 +14,68 @@ Recorded: 2026-08-29 (REWORK R2)
 Production module: `src/worker/loop.ts` (`runOnce` / `runOwnedWork`)
 
 ```text
-claim (WP-001 lease)
-→ beginExecutionAttempt
-→ resolve durable execution spec / handler (SETUP_ERROR on failure)
-→ task.execute (catch → EXEC_ERROR → finalize → failWork)
-→ task.verify (catch → VERIFY_ERROR → finalize → failWork)
-→ finishExecutionAttempt (durable; attempt_outcome combined gate)
-→ COMPLETED only if latest attempt is finished PASS (execution_ok + verify PASS + outcome PASS)
-→ VERIFY FAIL → applyRepair(attempt_id) when budget remains
-→ repair() throw → failWork (repair_error) without incrementing repair_count
-→ else failWork → FAILED (terminal)
+claim
+→ beginExecutionAttempt (work.attempt_started)
+→ resolve durable execution spec / handler
+    → SETUP_ERROR → work.attempt_finished only → FAILED
+→ recordExecutionStarted (work.execution_started)
+→ task.execute / verify
+→ finish or finalize (execution + attempt finished events as appropriate)
+→ COMPLETED | repair | FAILED
 ```
 
-## Attempt outcomes (R2 contract)
+## Attempt outcomes
 
 ```text
-PASS         = execution_ok === true AND verification_status === PASS
-FAIL         = finished execute/verify path but overall gate failed
-               (includes execution_ok=false + verification PASS)
-SETUP_ERROR  = durable spec/handler preparation failed before execute
-EXEC_ERROR   = execute threw
-VERIFY_ERROR = verify threw
-ABANDONED    = ownership ended before final classification
+PASS | FAIL | SETUP_ERROR | EXEC_ERROR | VERIFY_ERROR | ABANDONED
 ```
 
-Raw verifier result is preserved independently of `attempt_outcome`.
+PASS requires `execution_ok === true` AND verification PASS.
 
-## Completion gate (WP002-IR-001 + WP002-IR-008)
+## Event semantics (WP002-IR-007)
 
-- `finishExecutionAttempt` sets `attempt_outcome=PASS` only for the combined gate.
-- `completeWork` inspects the highest `attempt_number` overall (finished or not).
-- Completion requires that exact latest attempt: finished, `execution_ok`, verify PASS, outcome PASS.
-- Older PASS never authorizes completion when a newer attempt exists.
+Attempt lifecycle:
 
-## Terminal FAILED (WP002-IR-003 / IR-006 / IR-007)
+- `work.attempt_started`
+- `work.attempt_finished`
 
-Work state `FAILED`: not claimable, not requeued, lease cleared, durable `failure_reason`.
+Execution lifecycle (only when `execute()` is actually invoked):
 
-R2 additions:
+- `work.execution_started` via `recordExecutionStarted`
+- `work.execution_finished`
 
-- `repair_error:<bounded message>` when `handler.repair()` throws under valid lease
-- `setup_error:<bounded message>` for missing spec / unknown task type after attempt start
+SETUP_ERROR emits attempt started/finished and does **not** emit execution started/finished.
 
-## Repair provenance (WP002-IR-004)
+## Completion gate
 
-Unchanged: `applyRepair` requires finished verification-FAIL attempt_id linkage.
+- Combined outcome PASS only for true+PASS
+- `completeWork` uses highest `attempt_number` overall
 
-## Schema (WP002-IR-005)
+## Repair processing (WP002-IR-009)
 
-Unchanged: `SCHEMA_VERSION = 3`; exact 1→2→3; version 0 and future rejected.
-`SETUP_ERROR` is a value in existing `attempt_outcome` TEXT — no schema bump.
+Obtain repair → read/validate `nextInput`/`note` → `applyRepair` is one boundary.
+
+Non-fencing failures → `failWork(repair_error:…)` with valid lease.
+
+`STALE_LEASE` is never swallowed or converted into terminal mutation.
+
+## Terminal FAILED
+
+Not claimable, not requeued. Covers budget exhaustion, setup/repair/execution/verify errors, completion-gate rejection.
+
+## Schema
+
+`SCHEMA_VERSION = 3`; exact 1→2→3; unsupported versions rejected.
 
 ## Proving scenario
 
-`sum_two` with `{a:2,b:3,expected:5,bug:true}`:
-
-1. Attempt 1 → sum 6 → VERIFY FAIL → outcome FAIL
-2. Repair linked to that attempt
-3. Attempt 2 → sum 5 → VERIFY PASS → outcome PASS → COMPLETED
-
-## Crash / restart
-
-- Crash after claim: unfinished → ABANDONED; same `work_id` recovered
-- Crash after repair: repaired input persists; recovery continues
+fail → linked repair → pass → COMPLETED
 
 ## Tests
 
 ```text
 $ npm test
-38 pass / 0 fail
+44 pass / 0 fail
 
 $ npm run build
 exit 0
@@ -93,8 +86,6 @@ exit 0
 $ git diff --check 8f6d7387085e2e012f1f2bd698482cbd68e14b8a..HEAD
 exit 0
 ```
-
-Includes WP-000 + WP-001 regressions and WP-002 R1/R2 cases.
 
 ## Scope
 

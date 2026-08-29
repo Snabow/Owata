@@ -685,7 +685,7 @@ export class ControlStore {
            ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?)`,
         )
         .run(attemptId, workId, attemptNumber, workerId, ts, ts);
-      this.insertEvent("work.execution_started", {
+      this.insertEvent("work.attempt_started", {
         project_id: work.project_id,
         work_id: workId,
         payload: {
@@ -706,6 +706,42 @@ export class ControlStore {
       throw new ControlError("INTERNAL", "Failed to begin attempt");
     }
     return attempt;
+  }
+
+  /**
+   * Record that handler.execute() is about to run for an open attempt.
+   * Distinct from attempt lifecycle — SETUP_ERROR paths never call this.
+   */
+  recordExecutionStarted(
+    workId: string,
+    leaseToken: string,
+    workerId: string,
+    attemptId: string,
+    now: Date = this.clock(),
+  ): void {
+    this.withTransaction(() => {
+      const work = this.assertActiveLease(workId, leaseToken, workerId, now);
+      const existing = this.db
+        .prepare("SELECT * FROM work_attempts WHERE attempt_id = ?")
+        .get(attemptId) as Record<string, unknown> | undefined;
+      if (!existing || String(existing.work_id) !== workId) {
+        throw new ControlError("NOT_FOUND", "Unknown attempt");
+      }
+      if (existing.finished_at != null) {
+        throw new ControlError("INVALID", "Attempt already finished");
+      }
+      const ts = now.toISOString();
+      this.insertEvent("work.execution_started", {
+        project_id: work.project_id,
+        work_id: workId,
+        payload: {
+          attempt_id: attemptId,
+          worker_id: workerId,
+        },
+        ts,
+      });
+    });
+    this.flushEventJsonl();
   }
 
   finishExecutionAttempt(
@@ -773,6 +809,18 @@ export class ControlStore {
           execution_ok: args.executionOk,
           result: args.result,
           attempt_outcome: outcome,
+        },
+        ts,
+      });
+
+      this.insertEvent("work.attempt_finished", {
+        project_id: work.project_id,
+        work_id: args.workId,
+        payload: {
+          attempt_id: args.attemptId,
+          attempt_outcome: outcome,
+          execution_ok: args.executionOk,
+          verification_status: args.verificationStatus,
         },
         ts,
       });
@@ -868,7 +916,25 @@ export class ControlStore {
           args.outcome,
           args.attemptId,
         );
-      this.insertEvent("work.execution_finished", {
+
+      // SETUP_ERROR never claims execution started/finished.
+      // EXEC_ERROR / VERIFY_ERROR: execution was invoked — record finish evidence.
+      if (args.outcome === "EXEC_ERROR" || args.outcome === "VERIFY_ERROR") {
+        this.insertEvent("work.execution_finished", {
+          project_id: work.project_id,
+          work_id: args.workId,
+          payload: {
+            attempt_id: args.attemptId,
+            attempt_outcome: args.outcome,
+            execution_ok: args.executionOk,
+            result: args.result,
+            detail: args.detail.slice(0, 500),
+          },
+          ts,
+        });
+      }
+
+      this.insertEvent("work.attempt_finished", {
         project_id: work.project_id,
         work_id: args.workId,
         payload: {

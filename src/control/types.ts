@@ -27,6 +27,8 @@ export type EventType =
   | "work.created"
   | "work.claimed"
   | "work.lease_expired"
+  | "work.attempt_started"
+  | "work.attempt_finished"
   | "work.execution_started"
   | "work.execution_finished"
   | "work.verification_failed"

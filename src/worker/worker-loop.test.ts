@@ -29,7 +29,20 @@ function tempState(): string {
 }
 
 function cleanup(dir: string): void {
-  rmSync(dir, { recursive: true, force: true });
+  // Windows may briefly retain SQLite WAL handles after close.
+  for (let i = 0; i < 12; i += 1) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40 * (i + 1));
+    }
+  }
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // Best-effort: temp dirs are cleaned by OS; do not fail assertions.
+  }
 }
 
 function seedSumTwo(
@@ -350,6 +363,19 @@ test("WP002-IR-007: missing execution spec → SETUP_ERROR + FAILED", () => {
     assert.equal(att.attempt_outcome, "SETUP_ERROR");
     assert.equal(att.execution_ok, null);
     assert.ok(att.verification_detail);
+
+    const types = store.listEvents().map((e) => e.event_type);
+    assert.ok(types.includes("work.attempt_started"));
+    assert.ok(types.includes("work.attempt_finished"));
+    assert.equal(types.includes("work.execution_started"), false);
+    assert.equal(types.includes("work.execution_finished"), false);
+
+    const jsonl = store.readJsonlEvents().map((e) => e.event_type);
+    assert.equal(jsonl.includes("work.execution_started"), false);
+    assert.equal(jsonl.includes("work.execution_finished"), false);
+    assert.ok(jsonl.includes("work.attempt_started"));
+    assert.ok(jsonl.includes("work.attempt_finished"));
+
     assert.equal(runOnce(store, "w2", 5000), null);
     store.close();
 
@@ -382,7 +408,242 @@ test("WP002-IR-007: unknown task type → SETUP_ERROR + FAILED", () => {
     assert.equal(att.attempt_outcome, "SETUP_ERROR");
     assert.equal(att.execution_ok, null);
     assert.match(att.verification_detail ?? "", /Unknown task_type/);
+
+    const types = store.listEvents().map((e) => e.event_type);
+    assert.ok(types.includes("work.attempt_started"));
+    assert.ok(types.includes("work.attempt_finished"));
+    assert.equal(types.includes("work.execution_started"), false);
+    assert.equal(types.includes("work.execution_finished"), false);
+
     assert.equal(runOnce(store, "w2", 5000), null);
+    store.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("WP002-IR-007: execute path emits truthful execution evidence", () => {
+  const dir = tempState();
+  try {
+    const store = ControlStore.open({ stateDir: dir });
+    seedSumTwo(store, { a: 2, b: 3, expected: 5, bug: false });
+    const result = runOnce(store, "w1", 5000);
+    assert.ok(result?.completed);
+    const types = store.listEvents().map((e) => e.event_type);
+    assert.ok(types.includes("work.attempt_started"));
+    assert.ok(types.includes("work.execution_started"));
+    assert.ok(types.includes("work.execution_finished"));
+    assert.ok(types.includes("work.attempt_finished"));
+    assert.ok(types.includes("work.verification_passed"));
+    assert.ok(types.includes("work.completed"));
+    store.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("WP002-IR-007: execute throw records that execution began", () => {
+  const dir = tempState();
+  const taskType = "exec_throw_events";
+  registerTaskHandler({
+    taskType,
+    execute: () => {
+      throw new Error("boom-exec");
+    },
+    verify: () => ({ status: "PASS", detail: "n/a" }),
+    repair: () => null,
+  });
+  try {
+    const store = ControlStore.open({ stateDir: dir });
+    const project = store.createProject("exev");
+    store.createWork(project.project_id, "t", {
+      taskType,
+      taskInput: {},
+      maxRepairs: 0,
+    });
+    const result = runOnce(store, "w1", 5000);
+    assert.ok(result?.failed);
+    const types = store.listEvents().map((e) => e.event_type);
+    assert.ok(types.includes("work.attempt_started"));
+    assert.ok(types.includes("work.execution_started"));
+    assert.ok(types.includes("work.execution_finished"));
+    assert.ok(types.includes("work.attempt_finished"));
+    assert.equal(
+      store.listAttempts(result!.work.work_id)[0].attempt_outcome,
+      "EXEC_ERROR",
+    );
+    store.close();
+  } finally {
+    unregisterTaskHandler(taskType);
+    cleanup(dir);
+  }
+});
+
+test("WP002-IR-009: repair.nextInput getter throws → FAILED", () => {
+  const dir = tempState();
+  const taskType = "repair_next_throw";
+  registerTaskHandler({
+    taskType,
+    execute: () => ({ ok: true, output: { v: 1 } }),
+    verify: () => ({ status: "FAIL", detail: "need-repair" }),
+    repair: () =>
+      ({
+        get nextInput(): Record<string, unknown> {
+          throw new Error("nextInput-boom");
+        },
+        get note(): string {
+          return "n";
+        },
+      }) as ReturnType<TaskHandler["repair"]> & object,
+  });
+  try {
+    const store = ControlStore.open({ stateDir: dir });
+    const project = store.createProject("rn");
+    const work = store.createWork(project.project_id, "t", {
+      taskType,
+      taskInput: {},
+      maxRepairs: 2,
+    });
+    const first = runOnce(store, "w1", 5000);
+    assert.ok(first?.failed);
+    assert.equal(first.work.state, "FAILED");
+    assert.match(first.work.failure_reason ?? "", /^repair_error:nextInput-boom/);
+    assert.equal(store.getWork(work.work_id)?.repair_count, 0);
+    assert.equal(
+      store.listEvents().some((e) => e.event_type === "work.repair_applied"),
+      false,
+    );
+    assert.equal(store.listAttempts(work.work_id)[0].attempt_outcome, "FAIL");
+    assert.equal(runOnce(store, "w2", 5000), null);
+    store.close();
+  } finally {
+    unregisterTaskHandler(taskType);
+    cleanup(dir);
+  }
+});
+
+test("WP002-IR-009: repair.note getter throws → FAILED", () => {
+  const dir = tempState();
+  const taskType = "repair_note_throw";
+  registerTaskHandler({
+    taskType,
+    execute: () => ({ ok: true, output: { v: 1 } }),
+    verify: () => ({ status: "FAIL", detail: "need-repair" }),
+    repair: () =>
+      ({
+        get nextInput(): Record<string, unknown> {
+          return { fixed: true };
+        },
+        get note(): string {
+          throw new Error("note-boom");
+        },
+      }) as ReturnType<TaskHandler["repair"]> & object,
+  });
+  try {
+    const store = ControlStore.open({ stateDir: dir });
+    const project = store.createProject("rn2");
+    const work = store.createWork(project.project_id, "t", {
+      taskType,
+      taskInput: {},
+      maxRepairs: 2,
+    });
+    const first = runOnce(store, "w1", 5000);
+    assert.ok(first?.failed);
+    assert.match(first.work.failure_reason ?? "", /^repair_error:note-boom/);
+    assert.equal(store.getWork(work.work_id)?.repair_count, 0);
+    assert.equal(runOnce(store, "w2", 5000), null);
+    store.close();
+  } finally {
+    unregisterTaskHandler(taskType);
+    cleanup(dir);
+  }
+});
+
+test("WP002-IR-009: invalid repair result shape → FAILED", () => {
+  const dir = tempState();
+  const taskType = "repair_bad_shape";
+  registerTaskHandler({
+    taskType,
+    execute: () => ({ ok: true, output: { v: 1 } }),
+    verify: () => ({ status: "FAIL", detail: "need-repair" }),
+    repair: () =>
+      ({
+        nextInput: null,
+        note: "x",
+      }) as unknown as NonNullable<ReturnType<TaskHandler["repair"]>>,
+  });
+  try {
+    const store = ControlStore.open({ stateDir: dir });
+    const project = store.createProject("rs");
+    const work = store.createWork(project.project_id, "t", {
+      taskType,
+      taskInput: {},
+      maxRepairs: 2,
+    });
+    const first = runOnce(store, "w1", 5000);
+    assert.ok(first?.failed);
+    assert.match(first.work.failure_reason ?? "", /^repair_error:/);
+    assert.equal(store.getWork(work.work_id)?.repair_count, 0);
+    assert.equal(
+      store.listEvents().some((e) => e.event_type === "work.repair_applied"),
+      false,
+    );
+    store.close();
+  } finally {
+    unregisterTaskHandler(taskType);
+    cleanup(dir);
+  }
+});
+
+test("WP002-IR-009: STALE_LEASE during applyRepair is not swallowed", () => {
+  const dir = tempState();
+  try {
+    const store = ControlStore.open({ stateDir: dir });
+    seedSumTwo(store, { a: 2, b: 3, expected: 5, bug: true }, 2);
+    const t0 = new Date("2026-01-01T00:00:00.000Z");
+    const claimed = store.claimNextWork("stale", 1000, t0)!;
+    const att = store.beginExecutionAttempt(
+      claimed.work_id,
+      claimed.lease_token!,
+      "stale",
+      t0,
+    );
+    store.finishExecutionAttempt(
+      {
+        workId: claimed.work_id,
+        leaseToken: claimed.lease_token!,
+        workerId: "stale",
+        attemptId: att.attempt_id,
+        executionOk: true,
+        result: { sum: 6 },
+        verificationStatus: "FAIL",
+        verificationDetail: "bug",
+      },
+      t0,
+    );
+    // Lease expired but work still RUNNING under old ownership — fencing must reject.
+    const afterExpiry = new Date("2026-01-01T00:00:01.000Z");
+    assert.throws(
+      () =>
+        store.applyRepair(
+          {
+            workId: claimed.work_id,
+            leaseToken: claimed.lease_token!,
+            workerId: "stale",
+            attemptId: att.attempt_id,
+            nextInput: { a: 2, b: 3, expected: 5, bug: false },
+            note: "late",
+          },
+          afterExpiry,
+        ),
+      (e: unknown) => e instanceof ControlError && e.code === "STALE_LEASE",
+    );
+    assert.equal(store.getWork(claimed.work_id)?.state, "RUNNING");
+    assert.equal(store.getWork(claimed.work_id)?.repair_count, 0);
+    assert.equal(
+      store.listEvents().some((e) => e.event_type === "work.repair_applied"),
+      false,
+    );
     store.close();
   } finally {
     cleanup(dir);
