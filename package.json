@@ -11,6 +11,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test dist/state-directory.test.js",
     "owata": "node dist/cli.js"
   },
   "engines": {

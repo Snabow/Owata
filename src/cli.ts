@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { ensureStateDirectory } from "./state-directory.js";
 
 const VERSION = "0.0.1-genesis";
-const STATE_DIR = join(homedir(), ".owata");
+
+export function defaultStateDir(): string {
+  return process.env.OWATA_STATE_DIR ?? join(homedir(), ".owata");
+}
 
 function printVersion(): void {
   process.stdout.write(`owata ${VERSION}\n`);
@@ -22,7 +26,7 @@ function checkRuntime(): boolean {
   return typeof process.versions.node === "string" && process.versions.node.length > 0;
 }
 
-function checkGit(): boolean {
+export function checkGit(): boolean {
   const result = spawnSync("git", ["--version"], {
     encoding: "utf8",
     windowsHide: true,
@@ -30,22 +34,11 @@ function checkGit(): boolean {
   return result.status === 0;
 }
 
-function ensureStateDirectory(): boolean {
-  try {
-    if (!existsSync(STATE_DIR)) {
-      mkdirSync(STATE_DIR, { recursive: true });
-    }
-    return existsSync(STATE_DIR);
-  } catch {
-    return false;
-  }
-}
-
-function printDoctor(): number {
+export function runDoctor(stateDir: string = defaultStateDir()): number {
   const checks: Array<{ name: string; ok: boolean }> = [
     { name: "Runtime", ok: checkRuntime() },
     { name: "Git", ok: checkGit() },
-    { name: "State directory", ok: ensureStateDirectory() },
+    { name: "State directory", ok: ensureStateDirectory(stateDir) },
   ];
 
   let failed = false;
@@ -68,7 +61,7 @@ function printUsage(): void {
   process.stderr.write("Usage: owata --version | doctor | status\n");
 }
 
-function main(argv: string[]): number {
+export function main(argv: string[]): number {
   const args = argv.slice(2);
 
   if (args.length === 1 && (args[0] === "--version" || args[0] === "-V")) {
@@ -77,7 +70,7 @@ function main(argv: string[]): number {
   }
 
   if (args.length === 1 && args[0] === "doctor") {
-    return printDoctor();
+    return runDoctor();
   }
 
   if (args.length === 1 && args[0] === "status") {
@@ -89,4 +82,8 @@ function main(argv: string[]): number {
   return 1;
 }
 
-process.exitCode = main(process.argv);
+const entry = process.argv[1] ? resolve(process.argv[1]) : "";
+const self = resolve(fileURLToPath(import.meta.url));
+if (entry === self) {
+  process.exitCode = main(process.argv);
+}
