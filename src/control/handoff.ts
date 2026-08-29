@@ -1034,6 +1034,59 @@ export class HandoffStore {
     return this.getDispatch(dispatchId)!;
   }
 
+  /**
+   * Extend the lease of the CURRENT CLAIMED dispatch only.
+   * A stale fence, an already ACCEPTED/REJECTED/EXPIRED/RECOVERED dispatch,
+   * or a lease that has already lapsed cannot renew — fencing semantics are
+   * identical to acceptResult so a superseded owner can never keep itself alive.
+   */
+  renewDispatchLease(
+    dispatchId: string,
+    fenceToken: string,
+    leaseMs: number,
+  ): DispatchRecord {
+    const ts = nowIso(() => this.store.now());
+    const dispatch = this.getDispatch(dispatchId);
+    if (!dispatch) {
+      throw new ControlError("DISPATCH_NOT_FOUND", "Unknown dispatch");
+    }
+    if (dispatch.fence_token !== fenceToken || dispatch.state !== "CLAIMED") {
+      throw new ControlError(
+        "STALE_FENCE",
+        "Dispatch fence is not current; cannot renew lease",
+      );
+    }
+    if (this.store.now().getTime() >= Date.parse(dispatch.lease_expires_at)) {
+      throw new ControlError(
+        "STALE_FENCE",
+        "Dispatch lease already expired; cannot renew",
+      );
+    }
+    const expires = new Date(
+      this.store.now().getTime() + leaseMs,
+    ).toISOString();
+    this.store.db
+      .prepare(
+        `UPDATE dispatches SET lease_expires_at = ?, updated_at = ?
+         WHERE dispatch_id = ? AND fence_token = ? AND state = 'CLAIMED'`,
+      )
+      .run(expires, ts, dispatchId, fenceToken);
+    const cycle = this.requireCycle(dispatch.cycle_id);
+    this.store.appendEvent("cycle.lease_renewed", {
+      project_id: cycle.project_id,
+      work_id: null,
+      ts,
+      payload: {
+        cycle_id: dispatch.cycle_id,
+        request_id: dispatch.request_id,
+        dispatch_id: dispatch.dispatch_id,
+        attempt_number: dispatch.attempt_number,
+        lease_expires_at: expires,
+      },
+    });
+    return this.getDispatch(dispatchId)!;
+  }
+
   acceptResult(args: {
     dispatchId: string;
     fenceToken: string;

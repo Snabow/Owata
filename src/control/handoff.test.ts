@@ -221,7 +221,7 @@ const pcBuildAwait: PcDecisionBody = pcDecision({
   install_policy: { on_builder_candidate: "AWAIT_PC" },
 });
 
-test("fresh database initializes at schema v5", () => {
+test("fresh database initializes at schema v5", async () => {
   const dir = tempState();
   try {
     const store = ControlStore.open({ stateDir: dir });
@@ -233,7 +233,7 @@ test("fresh database initializes at schema v5", () => {
   }
 });
 
-test("real v4 state migrates to v5 without losing rows", () => {
+test("real v4 state migrates to v5 without losing rows", async () => {
   const dir = tempState();
   try {
     createExactV4Database(dir);
@@ -258,7 +258,7 @@ test("real v4 state migrates to v5 without losing rows", () => {
   }
 });
 
-test("WP003 Slice 1: full fake REWORK cycle with Human Gate", () => {
+test("WP003 Slice 1: full fake REWORK cycle with Human Gate", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -294,7 +294,7 @@ test("WP003 Slice 1: full fake REWORK cycle with Human Gate", () => {
       { owner: "disp-1", leaseMs: 60_000 },
     );
 
-    let last = dispatcher.runUntilStable(cycle.cycle_id);
+    let last = await dispatcher.runUntilStable(cycle.cycle_id);
     assert.equal(last.cycle.state, "HUMAN_GATE");
     assert.equal(builder.invocations, 2);
     assert.equal(reviewer.invocations, 2);
@@ -364,7 +364,7 @@ test("WP003 Slice 1: full fake REWORK cycle with Human Gate", () => {
     const gate = handoff.openGateForCycle(cycle.cycle_id);
     assert.ok(gate);
     handoff.answerHumanGate({ gateId: gate.gate_id, selectedChoice: "ACCEPT", note: "ok" });
-    last = dispatcher.runUntilStable(cycle.cycle_id);
+    last = await dispatcher.runUntilStable(cycle.cycle_id);
     assert.equal(last.cycle.state, "ACCEPTED");
     assert.equal(last.cycle.accepted_candidate_sha, "sha-b");
     assert.equal(last.cycle.latest_candidate_sha, "sha-b");
@@ -393,7 +393,7 @@ test("WP003 Slice 1: full fake REWORK cycle with Human Gate", () => {
   }
 });
 
-test("duplicate envelope and replay do not re-invoke after acceptance", () => {
+test("duplicate envelope and replay do not re-invoke after acceptance", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -417,8 +417,8 @@ test("duplicate envelope and replay do not re-invoke after acceptance", () => {
       { programControl: pc, builder, reviewer },
       { owner: "disp-1", leaseMs: 60_000 },
     );
-    dispatcher.step(cycle.cycle_id); // PC → DISPATCHING_BUILD
-    dispatcher.step(cycle.cycle_id); // builder → AWAITING_PC
+    await dispatcher.step(cycle.cycle_id); // PC → DISPATCHING_BUILD
+    await dispatcher.step(cycle.cycle_id); // builder → AWAITING_PC
     assert.equal(builder.invocations, 1);
     const accepted = handoff.listEnvelopes(cycle.cycle_id).find((e) => e.kind === "builder_result")!;
     const again = handoff.persistEnvelope(accepted);
@@ -434,7 +434,7 @@ test("duplicate envelope and replay do not re-invoke after acceptance", () => {
         }),
       (err: unknown) => err instanceof ControlError && err.code === "ALREADY_ACCEPTED",
     );
-    dispatcher.step(cycle.cycle_id); // already accepted / AWAITING_PC
+    await dispatcher.step(cycle.cycle_id); // already accepted / AWAITING_PC
     assert.equal(builder.invocations, 1);
     store.close();
   } finally {
@@ -442,7 +442,7 @@ test("duplicate envelope and replay do not re-invoke after acceptance", () => {
   }
 });
 
-test("stale reviewer SHA is RESULT_STALE and does not advance", () => {
+test("stale reviewer SHA is RESULT_STALE and does not advance", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -466,11 +466,11 @@ test("stale reviewer SHA is RESULT_STALE and does not advance", () => {
       { programControl: pc, builder, reviewer },
       { owner: "disp-1", leaseMs: 60_000 },
     );
-    dispatcher.step(cycle.cycle_id); // PC BUILD + policy install
-    dispatcher.step(cycle.cycle_id); // builder → DISPATCHING_REVIEW
+    await dispatcher.step(cycle.cycle_id); // PC BUILD + policy install
+    await dispatcher.step(cycle.cycle_id); // builder → DISPATCHING_REVIEW
     const before = handoff.requireCycle(cycle.cycle_id);
     assert.equal(before.state, "DISPATCHING_REVIEW");
-    const result = dispatcher.step(cycle.cycle_id);
+    const result = await dispatcher.step(cycle.cycle_id);
     assert.equal(result.action, "result_stale");
     assert.equal(handoff.requireCycle(cycle.cycle_id).state, "DISPATCHING_REVIEW");
     const rejected = store
@@ -484,7 +484,7 @@ test("stale reviewer SHA is RESULT_STALE and does not advance", () => {
   }
 });
 
-test("capability preflight blocks before invocation", () => {
+test("capability preflight blocks before invocation", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -506,8 +506,8 @@ test("capability preflight blocks before invocation", () => {
       { programControl: pc, builder, reviewer },
       { owner: "disp-1", leaseMs: 60_000 },
     );
-    dispatcher.step(cycle.cycle_id); // PC
-    const result = dispatcher.step(cycle.cycle_id); // builder capability
+    await dispatcher.step(cycle.cycle_id); // PC
+    const result = await dispatcher.step(cycle.cycle_id); // builder capability
     assert.equal(result.action, "capability_block");
     assert.equal(builder.invocations, 0);
     assert.ok(pc.invocations >= 1);
@@ -527,7 +527,7 @@ test("capability preflight blocks before invocation", () => {
   }
 });
 
-test("invalid adapter result is RESULT_INVALID", () => {
+test("invalid adapter result is RESULT_INVALID", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -545,8 +545,8 @@ test("invalid adapter result is RESULT_INVALID", () => {
       { programControl: pc, builder, reviewer },
       { owner: "disp-1", leaseMs: 60_000 },
     );
-    dispatcher.step(cycle.cycle_id); // PC
-    const result = dispatcher.step(cycle.cycle_id); // invalid builder
+    await dispatcher.step(cycle.cycle_id); // PC
+    const result = await dispatcher.step(cycle.cycle_id); // invalid builder
     assert.equal(result.action, "result_invalid");
     assert.equal(handoff.requireCycle(cycle.cycle_id).state, "DISPATCHING_BUILD");
     const rejected = store
@@ -559,7 +559,7 @@ test("invalid adapter result is RESULT_INVALID", () => {
   }
 });
 
-test("stale fence cannot overwrite the accepted result", () => {
+test("stale fence cannot overwrite the accepted result", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock, clock } = openHarness(dir);
@@ -583,7 +583,7 @@ test("stale fence cannot overwrite the accepted result", () => {
       },
       { owner: "disp-1", leaseMs: 1000 },
     );
-    dispatcher.step(cycle.cycle_id); // PC → DISPATCHING_BUILD
+    await dispatcher.step(cycle.cycle_id); // PC → DISPATCHING_BUILD
     const first = dispatcher.claimCurrent(cycle.cycle_id);
     clock.advanceMs(2000);
     handoff.recoverExpiredDispatches(store.now());
@@ -615,7 +615,7 @@ test("stale fence cannot overwrite the accepted result", () => {
         }),
       (err: unknown) => err instanceof ControlError && err.code === "STALE_FENCE",
     );
-    dispatcher.step(cycle.cycle_id);
+    await dispatcher.step(cycle.cycle_id);
     assert.equal(handoff.requireCycle(cycle.cycle_id).latest_candidate_sha, "sha-new");
     assert.notEqual(handoff.requireCycle(cycle.cycle_id).latest_candidate_sha, "sha-stale");
     store.close();
@@ -624,7 +624,7 @@ test("stale fence cannot overwrite the accepted result", () => {
   }
 });
 
-test("retry budget exhaustion returns to Program Control, not ABORT", () => {
+test("retry budget exhaustion returns to Program Control, not ABORT", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock, clock } = openHarness(dir);
@@ -658,11 +658,11 @@ test("retry budget exhaustion returns to Program Control, not ABORT", () => {
       },
       { owner: "disp-1", leaseMs: 500 },
     );
-    dispatcher.step(cycle.cycle_id);
+    await dispatcher.step(cycle.cycle_id);
     dispatcher.claimCurrent(cycle.cycle_id);
     clock.advanceMs(1000);
     handoff.recoverExpiredDispatches(store.now());
-    const result = dispatcher.step(cycle.cycle_id);
+    const result = await dispatcher.step(cycle.cycle_id);
     assert.equal(result.action, "retry_budget");
     const recovered = handoff.requireCycle(cycle.cycle_id);
     assert.equal(recovered.state, "RECOVERY_REQUIRED");
@@ -671,7 +671,7 @@ test("retry budget exhaustion returns to Program Control, not ABORT", () => {
     assert.ok(
       store.listEvents().some((e) => e.event_type === "cycle.recovery_required"),
     );
-    const afterPc = dispatcher.step(cycle.cycle_id);
+    const afterPc = await dispatcher.step(cycle.cycle_id);
     assert.equal(afterPc.cycle.state, "ABORTED");
     assert.equal(pc.invocations, 2);
     store.close();
@@ -680,7 +680,7 @@ test("retry budget exhaustion returns to Program Control, not ABORT", () => {
   }
 });
 
-test("protocol rejects credential-like fields", () => {
+test("protocol rejects credential-like fields", async () => {
   assert.throws(
     () =>
       parseCanonicalEnvelope({
@@ -727,7 +727,7 @@ test("process interruption recovers same request_id under a new fence", async ()
       },
       { owner: "parent", leaseMs: 400 },
     );
-    dispatcher.step(cycle.cycle_id);
+    await dispatcher.step(cycle.cycle_id);
     const requestId = handoff.requireCycle(cycle.cycle_id).current_request_id!;
     store.close();
 
@@ -737,7 +737,7 @@ test("process interruption recovers same request_id under a new fence", async ()
       { stdio: ["ignore", "pipe", "pipe"] },
     );
     let out = "";
-    child.stdout.on("data", (buf: Buffer) => {
+    child.stdout.on("data", async (buf: Buffer) => {
       out += buf.toString("utf8");
     });
     const claimed = new Promise<string>((resolve, reject) => {
@@ -773,7 +773,7 @@ test("process interruption recovers same request_id under a new fence", async ()
       },
       { owner: "resume-owner", leaseMs: 10_000 },
     );
-    const after = dispatcher2.step(cycle.cycle_id);
+    const after = await dispatcher2.step(cycle.cycle_id);
     assert.equal(after.action, "builder_result");
     assert.equal(handoff2.requireCycle(cycle.cycle_id).latest_candidate_sha, "sha-resume");
     assert.equal(handoff2.requireCycle(cycle.cycle_id).state, "AWAITING_PC");
@@ -820,7 +820,7 @@ test("process interruption recovers same request_id under a new fence", async ()
   }
 });
 
-test("forbidden secret fields never appear in persisted envelopes", () => {
+test("forbidden secret fields never appear in persisted envelopes", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -843,8 +843,8 @@ test("forbidden secret fields never appear in persisted envelopes", () => {
       },
       { owner: "d", leaseMs: 1000 },
     );
-    dispatcher.step(cycle.cycle_id); // PC BUILD
-    dispatcher.step(cycle.cycle_id); // builder → AWAITING_PC
+    await dispatcher.step(cycle.cycle_id); // PC BUILD
+    await dispatcher.step(cycle.cycle_id); // builder → AWAITING_PC
     assert.equal(handoff.requireCycle(cycle.cycle_id).state, "AWAITING_PC");
     const text = JSON.stringify(handoff.listEnvelopes(cycle.cycle_id));
     assert.equal(/api_key|password|oauth_token|private_key/i.test(text), false);
@@ -854,7 +854,7 @@ test("forbidden secret fields never appear in persisted envelopes", () => {
   }
 });
 
-test("unknown future schema still rejected", () => {
+test("unknown future schema still rejected", async () => {
   const dir = tempState();
   try {
     const store = ControlStore.open({ stateDir: dir });
@@ -871,7 +871,7 @@ test("unknown future schema still rejected", () => {
   }
 });
 
-test("R1: createCycle rejects unproven DISPATCH_REVIEW policy", () => {
+test("R1: createCycle rejects unproven DISPATCH_REVIEW policy", async () => {
   const dir = tempState();
   try {
     const { store, handoff } = openHarness(dir);
@@ -891,7 +891,7 @@ test("R1: createCycle rejects unproven DISPATCH_REVIEW policy", () => {
   }
 });
 
-test("R1: incapable Program Control is preflight-blocked", () => {
+test("R1: incapable Program Control is preflight-blocked", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -910,7 +910,7 @@ test("R1: incapable Program Control is preflight-blocked", () => {
       },
       { owner: "d", leaseMs: 1000 },
     );
-    const result = dispatcher.step(cycle.cycle_id);
+    const result = await dispatcher.step(cycle.cycle_id);
     assert.equal(result.action, "capability_block");
     assert.equal(pc.preflightCount, 1);
     assert.equal(pc.invocations, 0);
@@ -926,7 +926,7 @@ test("R1: incapable Program Control is preflight-blocked", () => {
   }
 });
 
-test("R1: competing PC decisions ? stale cannot override ABORT", () => {
+test("R1: competing PC decisions ? stale cannot override ABORT", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -947,7 +947,7 @@ test("R1: competing PC decisions ? stale cannot override ABORT", () => {
       },
       { owner: "owner-a", leaseMs: 60_000 },
     );
-    const first = d1.step(cycle.cycle_id);
+    const first = await d1.step(cycle.cycle_id);
     assert.equal(first.cycle.state, "ABORTED");
     const pcReq = handoff
       .listEnvelopes(cycle.cycle_id)
@@ -987,7 +987,7 @@ test("R1: competing PC decisions ? stale cannot override ABORT", () => {
   }
 });
 
-test("R1: miswired Builder cannot self-approve via PC Decision envelope", () => {
+test("R1: miswired Builder cannot self-approve via PC Decision envelope", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -1023,11 +1023,11 @@ test("R1: miswired Builder cannot self-approve via PC Decision envelope", () => 
       },
       { owner: "d", leaseMs: 5000 },
     );
-    dispatcher.step(cycle.cycle_id);
+    await dispatcher.step(cycle.cycle_id);
     const buildReq = handoff.requireCycle(cycle.cycle_id).current_request_id!;
     (builder.maliciousRaw as { request_id: string }).request_id = buildReq;
     (builder.maliciousRaw as { cycle_id: string }).cycle_id = cycle.cycle_id;
-    const result = dispatcher.step(cycle.cycle_id);
+    const result = await dispatcher.step(cycle.cycle_id);
     assert.equal(result.action, "result_invalid");
     assert.equal(handoff.requireCycle(cycle.cycle_id).state, "DISPATCHING_BUILD");
     store.close();
@@ -1036,7 +1036,7 @@ test("R1: miswired Builder cannot self-approve via PC Decision envelope", () => 
   }
 });
 
-test("R1: miswired PC adapter identity cannot obtain PC authority", () => {
+test("R1: miswired PC adapter identity cannot obtain PC authority", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -1060,7 +1060,7 @@ test("R1: miswired PC adapter identity cannot obtain PC authority", () => {
       },
       { owner: "d", leaseMs: 1000 },
     );
-    const result = dispatcher.step(cycle.cycle_id);
+    const result = await dispatcher.step(cycle.cycle_id);
     assert.equal(result.action, "adapter_role_mismatch");
     assert.equal(pc.invocations, 0);
     assert.equal(handoff.requireCycle(cycle.cycle_id).state, "RECOVERY_REQUIRED");
@@ -1070,7 +1070,7 @@ test("R1: miswired PC adapter identity cannot obtain PC authority", () => {
   }
 });
 
-test("R1: envelope_id replay with different cycle_id is rejected", () => {
+test("R1: envelope_id replay with different cycle_id is rejected", async () => {
   const dir = tempState();
   try {
     const { store, handoff } = openHarness(dir);
@@ -1111,7 +1111,7 @@ test("R1: envelope_id replay with different cycle_id is rejected", () => {
   }
 });
 
-test("R1: exact duplicate canonical envelope is idempotent", () => {
+test("R1: exact duplicate canonical envelope is idempotent", async () => {
   const dir = tempState();
   try {
     const { store, handoff } = openHarness(dir);
@@ -1146,7 +1146,7 @@ test("R1: exact duplicate canonical envelope is idempotent", () => {
   }
 });
 
-test("R1: auto-review without PC provenance does not dispatch Reviewer", () => {
+test("R1: auto-review without PC provenance does not dispatch Reviewer", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -1171,8 +1171,8 @@ test("R1: auto-review without PC provenance does not dispatch Reviewer", () => {
       },
       { owner: "d", leaseMs: 5000 },
     );
-    dispatcher.step(cycle.cycle_id); // PC BUILD without install_policy
-    const last = dispatcher.step(cycle.cycle_id); // builder → AWAITING_PC (no auto-review)
+    await dispatcher.step(cycle.cycle_id); // PC BUILD without install_policy
+    const last = await dispatcher.step(cycle.cycle_id); // builder → AWAITING_PC (no auto-review)
     assert.equal(last.cycle.state, "AWAITING_PC");
     assert.equal(reviewer.invocations, 0);
     assert.equal(handoff.requireCycle(cycle.cycle_id).latest_candidate_sha, "sha-a");
@@ -1183,7 +1183,7 @@ test("R1: auto-review without PC provenance does not dispatch Reviewer", () => {
   }
 });
 
-test("R1: auto-review with durable PC provenance dispatches Reviewer and survives reopen", () => {
+test("R1: auto-review with durable PC provenance dispatches Reviewer and survives reopen", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -1213,8 +1213,8 @@ test("R1: auto-review with durable PC provenance dispatches Reviewer and survive
       },
       { owner: "d", leaseMs: 5000 },
     );
-    dispatcher.step(cycle.cycle_id);
-    dispatcher.step(cycle.cycle_id);
+    await dispatcher.step(cycle.cycle_id);
+    await dispatcher.step(cycle.cycle_id);
     assert.equal(handoff.requireCycle(cycle.cycle_id).state, "DISPATCHING_REVIEW");
     assert.equal(reviewer.invocations, 0);
     const authId = handoff.requireCycle(cycle.cycle_id).policy_authorized_by_decision_id;
@@ -1283,7 +1283,7 @@ test("R1: Program Control process interruption recovers same request_id", async 
       { stdio: ["ignore", "pipe", "pipe"] },
     );
     let out = "";
-    child.stdout.on("data", (buf: Buffer) => {
+    child.stdout.on("data", async (buf: Buffer) => {
       out += buf.toString("utf8");
     });
     const claimed = await new Promise<string>((resolve, reject) => {
@@ -1323,7 +1323,7 @@ test("R1: Program Control process interruption recovers same request_id", async 
       },
       { owner: "resume-pc", leaseMs: 10_000 },
     );
-    const after = dispatcher2.step(cycle.cycle_id);
+    const after = await dispatcher2.step(cycle.cycle_id);
     assert.equal(after.action, "pc_decision");
     assert.equal(handoff2.requireCycle(cycle.cycle_id).state, "DISPATCHING_BUILD");
     const latest = handoff2.latestDispatch(cycle.cycle_id, requestId)!;
@@ -1358,7 +1358,7 @@ test("R1: Program Control process interruption recovers same request_id", async 
     cleanup(dir);
   }
 });
-test("R2 F01: forged builder-from Decision cannot install or auto-review (OWATA-REQ-0025-F01)", () => {
+test("R2 F01: forged builder-from Decision cannot install or auto-review (OWATA-REQ-0025-F01)", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -1422,8 +1422,8 @@ test("R2 F01: forged builder-from Decision cannot install or auto-review (OWATA-
         `UPDATE cycles SET policy_json = ?, policy_authorized_by_decision_id = NULL, state = 'AWAITING_PC', current_request_id = NULL WHERE cycle_id = ?`,
       )
       .run(JSON.stringify({ on_builder_candidate: "AWAIT_PC" }), cycle.cycle_id);
-    dispatcher.step(cycle.cycle_id);
-    dispatcher.step(cycle.cycle_id);
+    await dispatcher.step(cycle.cycle_id);
+    await dispatcher.step(cycle.cycle_id);
     assert.equal(handoff.requireCycle(cycle.cycle_id).state, "AWAITING_PC");
     assert.equal(
       handoff.listEnvelopes(cycle.cycle_id).filter((e) => e.kind === "reviewer_result").length,
@@ -1435,7 +1435,7 @@ test("R2 F01: forged builder-from Decision cannot install or auto-review (OWATA-
   }
 });
 
-test("R2 F01: unaccepted Decision / mismatched dispatch / null install_policy rejected", () => {
+test("R2 F01: unaccepted Decision / mismatched dispatch / null install_policy rejected", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -1464,8 +1464,8 @@ test("R2 F01: unaccepted Decision / mismatched dispatch / null install_policy re
       },
       { owner: "d", leaseMs: 5000 },
     );
-    dispatcher.step(cycle.cycle_id);
-    dispatcher.step(cycle.cycle_id);
+    await dispatcher.step(cycle.cycle_id);
+    await dispatcher.step(cycle.cycle_id);
     assert.equal(handoff.requireCycle(cycle.cycle_id).state, "DISPATCHING_REVIEW");
     const authId = handoff.requireCycle(cycle.cycle_id).policy_authorized_by_decision_id!;
     const good = handoff.requireCycle(cycle.cycle_id);
@@ -1521,7 +1521,7 @@ test("R2 F01: unaccepted Decision / mismatched dispatch / null install_policy re
   }
 });
 
-test("R2 F01: cross-cycle Decision and wrong-policy install rejected; reopen keeps valid provenance", () => {
+test("R2 F01: cross-cycle Decision and wrong-policy install rejected; reopen keeps valid provenance", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -1554,7 +1554,7 @@ test("R2 F01: cross-cycle Decision and wrong-policy install rejected; reopen kee
       },
       { owner: "d", leaseMs: 5000 },
     );
-    d1.step(c1.cycle_id);
+    await d1.step(c1.cycle_id);
     const authId = handoff.requireCycle(c1.cycle_id).policy_authorized_by_decision_id!;
     assert.throws(
       () =>
@@ -1590,7 +1590,7 @@ test("R2 F01: cross-cycle Decision and wrong-policy install rejected; reopen kee
   }
 });
 
-test("R2 F02: Builder PC semantic RETRY creates new request_id (OWATA-REQ-0025-F02)", () => {
+test("R2 F02: Builder PC semantic RETRY creates new request_id (OWATA-REQ-0025-F02)", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock, clock } = openHarness(dir);
@@ -1645,13 +1645,13 @@ test("R2 F02: Builder PC semantic RETRY creates new request_id (OWATA-REQ-0025-F
       },
       { owner: "d", leaseMs: 500 },
     );
-    dispatcher.step(cycle.cycle_id); // PC BUILD
+    await dispatcher.step(cycle.cycle_id); // PC BUILD
     const failedReq = handoff.requireCycle(cycle.cycle_id).current_request_id!;
-    dispatcher.step(cycle.cycle_id); // builder runtime_error
+    await dispatcher.step(cycle.cycle_id); // builder runtime_error
     assert.equal(builder.invocations, 1);
     clock.advanceMs(1000);
     handoff.recoverExpiredDispatches(store.now());
-    const exhausted = dispatcher.step(cycle.cycle_id);
+    const exhausted = await dispatcher.step(cycle.cycle_id);
     assert.equal(exhausted.action, "retry_budget");
     assert.equal(handoff.requireCycle(cycle.cycle_id).state, "RECOVERY_REQUIRED");
     assert.equal(
@@ -1660,7 +1660,7 @@ test("R2 F02: Builder PC semantic RETRY creates new request_id (OWATA-REQ-0025-F
     );
     const pcReqBefore = handoff.requireCycle(cycle.cycle_id).current_request_id;
 
-    const afterRetry = dispatcher.step(cycle.cycle_id); // PC RETRY
+    const afterRetry = await dispatcher.step(cycle.cycle_id); // PC RETRY
     assert.equal(afterRetry.action, "pc_decision");
     const live = handoff.requireCycle(cycle.cycle_id);
     assert.equal(live.state, "DISPATCHING_BUILD");
@@ -1682,7 +1682,7 @@ test("R2 F02: Builder PC semantic RETRY creates new request_id (OWATA-REQ-0025-F
     assert.equal(retryBody.action, "BUILD");
     assert.equal(retryBody.target_role, "builder");
 
-    const built = dispatcher.step(cycle.cycle_id);
+    const built = await dispatcher.step(cycle.cycle_id);
     assert.equal(built.action, "builder_result");
     assert.equal(handoff.requireCycle(cycle.cycle_id).latest_candidate_sha, "sha-retry");
     assert.equal(handoff.requireCycle(cycle.cycle_id).state, "AWAITING_PC");
@@ -1693,7 +1693,7 @@ test("R2 F02: Builder PC semantic RETRY creates new request_id (OWATA-REQ-0025-F
   }
 });
 
-test("R2 F02: Reviewer PC semantic RETRY resumes REVIEW at target SHA", () => {
+test("R2 F02: Reviewer PC semantic RETRY resumes REVIEW at target SHA", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock, clock } = openHarness(dir);
@@ -1751,20 +1751,20 @@ test("R2 F02: Reviewer PC semantic RETRY resumes REVIEW at target SHA", () => {
       },
       { owner: "d", leaseMs: 500 },
     );
-    dispatcher.step(cycle.cycle_id); // PC
-    dispatcher.step(cycle.cycle_id); // builder → DISPATCHING_REVIEW
+    await dispatcher.step(cycle.cycle_id); // PC
+    await dispatcher.step(cycle.cycle_id); // builder → DISPATCHING_REVIEW
     assert.equal(handoff.requireCycle(cycle.cycle_id).state, "DISPATCHING_REVIEW");
     const failedReview = handoff.requireCycle(cycle.cycle_id).current_request_id!;
-    dispatcher.step(cycle.cycle_id); // reviewer runtime_error
+    await dispatcher.step(cycle.cycle_id); // reviewer runtime_error
     clock.advanceMs(1000);
     handoff.recoverExpiredDispatches(store.now());
-    assert.equal(dispatcher.step(cycle.cycle_id).action, "retry_budget");
+    assert.equal((await dispatcher.step(cycle.cycle_id)).action, "retry_budget");
     assert.equal(
       handoff.requireCycle(cycle.cycle_id).recovery_target_request_id,
       failedReview,
     );
 
-    const retried = dispatcher.step(cycle.cycle_id); // PC RETRY
+    const retried = await dispatcher.step(cycle.cycle_id); // PC RETRY
     assert.equal(retried.action, "pc_decision");
     const live = handoff.requireCycle(cycle.cycle_id);
     assert.equal(live.state, "DISPATCHING_REVIEW");
@@ -1778,7 +1778,7 @@ test("R2 F02: Reviewer PC semantic RETRY resumes REVIEW at target SHA", () => {
     assert.equal(body.action, "REVIEW");
     assert.equal(body.target_sha, "sha-rev");
     assert.equal(body.retry_of_request_id, failedReview);
-    const done = dispatcher.step(cycle.cycle_id);
+    const done = await dispatcher.step(cycle.cycle_id);
     assert.equal(done.action, "reviewer_result");
     assert.equal(handoff.requireCycle(cycle.cycle_id).state, "AWAITING_PC");
     assert.equal(reviewer.invocations, 2);
@@ -1788,7 +1788,7 @@ test("R2 F02: Reviewer PC semantic RETRY resumes REVIEW at target SHA", () => {
   }
 });
 
-test("R2 F02: recovery target survives reopen; invalid target rejects RETRY", () => {
+test("R2 F02: recovery target survives reopen; invalid target rejects RETRY", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock, clock } = openHarness(dir);
@@ -1815,12 +1815,12 @@ test("R2 F02: recovery target survives reopen; invalid target rejects RETRY", ()
       },
       { owner: "d", leaseMs: 500 },
     );
-    dispatcher.step(cycle.cycle_id);
+    await dispatcher.step(cycle.cycle_id);
     const failedReq = handoff.requireCycle(cycle.cycle_id).current_request_id!;
-    dispatcher.step(cycle.cycle_id);
+    await dispatcher.step(cycle.cycle_id);
     clock.advanceMs(1000);
     handoff.recoverExpiredDispatches(store.now());
-    dispatcher.step(cycle.cycle_id);
+    await dispatcher.step(cycle.cycle_id);
     assert.equal(
       handoff.requireCycle(cycle.cycle_id).recovery_target_request_id,
       failedReq,
@@ -1846,7 +1846,7 @@ test("R2 F02: recovery target survives reopen; invalid target rejects RETRY", ()
       },
       { owner: "d2", leaseMs: 5000 },
     );
-    const ok = d2.step(cycle.cycle_id);
+    const ok = await d2.step(cycle.cycle_id);
     assert.equal(ok.action, "pc_decision");
     assert.equal(h2.requireCycle(cycle.cycle_id).state, "DISPATCHING_BUILD");
     again.close();
@@ -1876,7 +1876,7 @@ test("R2 F02: recovery target survives reopen; invalid target rejects RETRY", ()
         },
         { owner: "d3", leaseMs: 5000 },
       );
-      const bad = d3.step(c3.cycle_id);
+      const bad = await d3.step(c3.cycle_id);
       assert.equal(bad.action, "result_invalid");
       assert.notEqual(h3.requireCycle(c3.cycle_id).state, "DISPATCHING_BUILD");
       s3.close();
@@ -1888,7 +1888,7 @@ test("R2 F02: recovery target survives reopen; invalid target rejects RETRY", ()
   }
 });
 
-test("R2 F01 exploit: forged Control Request envelope roles cannot authorize policy (OWATA-REQ-0027-F01)", () => {
+test("R2 F01 exploit: forged Control Request envelope roles cannot authorize policy (OWATA-REQ-0027-F01)", async () => {
   const dir = tempState();
   try {
     const { store, handoff } = openHarness(dir);
@@ -1972,7 +1972,7 @@ test("R2 F01 exploit: forged Control Request envelope roles cannot authorize pol
   }
 });
 
-test("R3 F01: Control Request from_role/to_role/expected_result_kind must be canonical", () => {
+test("R3 F01: Control Request from_role/to_role/expected_result_kind must be canonical", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -2001,7 +2001,7 @@ test("R3 F01: Control Request from_role/to_role/expected_result_kind must be can
       },
       { owner: "d", leaseMs: 5000 },
     );
-    d.step(cycle.cycle_id);
+    await d.step(cycle.cycle_id);
     const authId = handoff.requireCycle(cycle.cycle_id).policy_authorized_by_decision_id!;
     const decision = handoff.getEnvelope(authId)!;
     const req = handoff
@@ -2057,7 +2057,7 @@ test("R3 F01: Control Request from_role/to_role/expected_result_kind must be can
   }
 });
 
-test("R3 F02: accepted Builder request cannot be PC RETRY target (OWATA-REQ-0027-F02)", () => {
+test("R3 F02: accepted Builder request cannot be PC RETRY target (OWATA-REQ-0027-F02)", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -2084,9 +2084,9 @@ test("R3 F02: accepted Builder request cannot be PC RETRY target (OWATA-REQ-0027
       },
       { owner: "d", leaseMs: 5000 },
     );
-    dispatcher.step(cycle.cycle_id); // PC BUILD
+    await dispatcher.step(cycle.cycle_id); // PC BUILD
     const acceptedReq = handoff.requireCycle(cycle.cycle_id).current_request_id!;
-    dispatcher.step(cycle.cycle_id); // builder success → AWAITING_PC
+    await dispatcher.step(cycle.cycle_id); // builder success → AWAITING_PC
     assert.ok(handoff.acceptedDispatch(cycle.cycle_id, acceptedReq));
 
     handoff.transition(cycle.cycle_id, "RECOVERY_REQUIRED", {
@@ -2095,7 +2095,7 @@ test("R3 F02: accepted Builder request cannot be PC RETRY target (OWATA-REQ-0027
       current_request_id: null,
     });
     const beforeEnvs = handoff.listEnvelopes(cycle.cycle_id).length;
-    const result = dispatcher.step(cycle.cycle_id); // PC RETRY should reject
+    const result = await dispatcher.step(cycle.cycle_id); // PC RETRY should reject
     assert.equal(result.action, "result_invalid");
     assert.equal(
       handoff.listEnvelopes(cycle.cycle_id).filter((e) => {
@@ -2111,7 +2111,7 @@ test("R3 F02: accepted Builder request cannot be PC RETRY target (OWATA-REQ-0027
   }
 });
 
-test("R3 F02: target without durable failure evidence is rejected", () => {
+test("R3 F02: target without durable failure evidence is rejected", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -2165,14 +2165,14 @@ test("R3 F02: target without durable failure evidence is rejected", () => {
       },
       { owner: "d", leaseMs: 5000 },
     );
-    assert.equal(d.step(cycle.cycle_id).action, "result_invalid");
+    assert.equal((await d.step(cycle.cycle_id)).action, "result_invalid");
     store.close();
   } finally {
     cleanup(dir);
   }
 });
 
-test("R3 F03: Human Gate preserves recovery target through Human RETRY to PC RETRY", () => {
+test("R3 F03: Human Gate preserves recovery target through Human RETRY to PC RETRY", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock, clock } = openHarness(dir);
@@ -2233,18 +2233,18 @@ test("R3 F03: Human Gate preserves recovery target through Human RETRY to PC RET
       },
       { owner: "d", leaseMs: 500 },
     );
-    dispatcher.step(cycle.cycle_id); // PC BUILD
+    await dispatcher.step(cycle.cycle_id); // PC BUILD
     const failedReq = handoff.requireCycle(cycle.cycle_id).current_request_id!;
-    dispatcher.step(cycle.cycle_id); // builder crash
+    await dispatcher.step(cycle.cycle_id); // builder crash
     clock.advanceMs(1000);
     handoff.recoverExpiredDispatches(store.now());
-    assert.equal(dispatcher.step(cycle.cycle_id).action, "retry_budget");
+    assert.equal((await dispatcher.step(cycle.cycle_id)).action, "retry_budget");
     assert.equal(
       handoff.requireCycle(cycle.cycle_id).recovery_target_request_id,
       failedReq,
     );
 
-    const gateStep = dispatcher.step(cycle.cycle_id); // PC HUMAN_GATE
+    const gateStep = await dispatcher.step(cycle.cycle_id); // PC HUMAN_GATE
     assert.equal(gateStep.action, "pc_decision");
     assert.equal(handoff.requireCycle(cycle.cycle_id).state, "HUMAN_GATE");
     assert.equal(
@@ -2302,12 +2302,12 @@ test("R3 F03: Human Gate preserves recovery target through Human RETRY to PC RET
       },
       { owner: "d2", leaseMs: 5000 },
     );
-    const humanApplied = d2.step(cycle.cycle_id);
+    const humanApplied = await d2.step(cycle.cycle_id);
     assert.equal(humanApplied.action, "human_gate_applied");
     assert.equal(h2.requireCycle(cycle.cycle_id).state, "AWAITING_PC");
     assert.equal(h2.requireCycle(cycle.cycle_id).recovery_target_request_id, failedReq);
 
-    const retried = d2.step(cycle.cycle_id); // PC RETRY
+    const retried = await d2.step(cycle.cycle_id); // PC RETRY
     assert.equal(retried.action, "pc_decision");
     const live = h2.requireCycle(cycle.cycle_id);
     assert.equal(live.state, "DISPATCHING_BUILD");
@@ -2317,7 +2317,7 @@ test("R3 F03: Human Gate preserves recovery target through Human RETRY to PC RET
       retry_of_request_id: string;
     };
     assert.equal(body.retry_of_request_id, failedReq);
-    const built = d2.step(cycle.cycle_id);
+    const built = await d2.step(cycle.cycle_id);
     assert.equal(built.action, "builder_result");
     assert.equal(h2.requireCycle(cycle.cycle_id).latest_candidate_sha, "sha-after-gate");
     again.close();
@@ -2359,7 +2359,7 @@ function persistBuilderRequest(
   });
 }
 
-test("R4 F01: stale historical A cannot authorize current lineage B (OWATA-REQ-0030-F01)", () => {
+test("R4 F01: stale historical A cannot authorize current lineage B (OWATA-REQ-0030-F01)", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -2430,7 +2430,7 @@ test("R4 F01: stale historical A cannot authorize current lineage B (OWATA-REQ-0
       },
       { owner: "probe-dispatcher", leaseMs: 60_000 },
     );
-    const result = dispatcher.step(cycle.cycle_id);
+    const result = await dispatcher.step(cycle.cycle_id);
     assert.equal(result.action, "result_invalid");
     const after = handoff.requireCycle(cycle.cycle_id);
     assert.notEqual(after.state, "DISPATCHING_BUILD");
@@ -2448,7 +2448,7 @@ test("R4 F01: stale historical A cannot authorize current lineage B (OWATA-REQ-0
   }
 });
 
-test("R4 F01: matching current lineage allows PC semantic RETRY", () => {
+test("R4 F01: matching current lineage allows PC semantic RETRY", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock } = openHarness(dir);
@@ -2498,7 +2498,7 @@ test("R4 F01: matching current lineage allows PC semantic RETRY", () => {
       },
       { owner: "d", leaseMs: 5000 },
     );
-    const result = dispatcher.step(cycle.cycle_id);
+    const result = await dispatcher.step(cycle.cycle_id);
     assert.equal(result.action, "pc_decision");
     const live = handoff.requireCycle(cycle.cycle_id);
     assert.equal(live.state, "DISPATCHING_BUILD");
@@ -2518,7 +2518,7 @@ test("R4 F01: matching current lineage allows PC semantic RETRY", () => {
   }
 });
 
-test("R4 F01: mismatched lineage id / request / reason reject", () => {
+test("R4 F01: mismatched lineage id / request / reason reject", async () => {
   const dir = tempState();
   try {
     const { store, handoff } = openHarness(dir);
@@ -2599,7 +2599,7 @@ test("R4 F01: mismatched lineage id / request / reason reject", () => {
   }
 });
 
-test("R4 F01: historical evidence without current lineage rejects", () => {
+test("R4 F01: historical evidence without current lineage rejects", async () => {
   const dir = tempState();
   try {
     const { store, handoff } = openHarness(dir);
@@ -2645,7 +2645,7 @@ test("R4 F01: historical evidence without current lineage rejects", () => {
   }
 });
 
-test("R4 F01: later recovery supersedes old lineage; reopen preserves current", () => {
+test("R4 F01: later recovery supersedes old lineage; reopen preserves current", async () => {
   const dir = tempState();
   try {
     const { store, handoff } = openHarness(dir);
@@ -2705,7 +2705,7 @@ test("R4 F01: later recovery supersedes old lineage; reopen preserves current", 
   }
 });
 
-test("R4 F01: Human Gate preserves recovery_lineage_id through reopen and Human RETRY", () => {
+test("R4 F01: Human Gate preserves recovery_lineage_id through reopen and Human RETRY", async () => {
   const dir = tempState();
   try {
     const { store, handoff, envClock, clock } = openHarness(dir);
@@ -2765,19 +2765,19 @@ test("R4 F01: Human Gate preserves recovery_lineage_id through reopen and Human 
       },
       { owner: "d", leaseMs: 500 },
     );
-    dispatcher.step(cycle.cycle_id); // PC BUILD
+    await dispatcher.step(cycle.cycle_id); // PC BUILD
     const failedReq = handoff.requireCycle(cycle.cycle_id).current_request_id!;
-    dispatcher.step(cycle.cycle_id); // builder fail
+    await dispatcher.step(cycle.cycle_id); // builder fail
     clock.advanceMs(1000);
     handoff.recoverExpiredDispatches(store.now());
-    dispatcher.step(cycle.cycle_id); // retry budget → recovery
+    await dispatcher.step(cycle.cycle_id); // retry budget → recovery
     const lineage = handoff.requireCycle(cycle.cycle_id).recovery_lineage_id;
     assert.ok(lineage);
     assert.equal(
       handoff.requireCycle(cycle.cycle_id).recovery_target_request_id,
       failedReq,
     );
-    dispatcher.step(cycle.cycle_id); // PC HUMAN_GATE
+    await dispatcher.step(cycle.cycle_id); // PC HUMAN_GATE
     assert.equal(handoff.requireCycle(cycle.cycle_id).state, "HUMAN_GATE");
     assert.equal(handoff.requireCycle(cycle.cycle_id).recovery_lineage_id, lineage);
 
@@ -2828,11 +2828,11 @@ test("R4 F01: Human Gate preserves recovery_lineage_id through reopen and Human 
       },
       { owner: "d2", leaseMs: 5000 },
     );
-    const humanApplied = d2.step(cycle.cycle_id);
+    const humanApplied = await d2.step(cycle.cycle_id);
     assert.equal(humanApplied.action, "human_gate_applied");
     assert.equal(h2.requireCycle(cycle.cycle_id).recovery_lineage_id, lineage);
     assert.equal(h2.requireCycle(cycle.cycle_id).recovery_target_request_id, failedReq);
-    const retried = d2.step(cycle.cycle_id);
+    const retried = await d2.step(cycle.cycle_id);
     assert.equal(retried.action, "pc_decision");
     const live = h2.requireCycle(cycle.cycle_id);
     assert.equal(live.recovery_lineage_id, null);

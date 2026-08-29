@@ -50,7 +50,8 @@ export type EventType =
   | "cycle.human_gate_created"
   | "cycle.human_gate_answered"
   | "cycle.dispatch_recovered"
-  | "cycle.recovery_required";
+  | "cycle.recovery_required"
+  | "cycle.lease_renewed";
 
 export interface ProjectRecord {
   project_id: string;

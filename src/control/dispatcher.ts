@@ -2,6 +2,7 @@ import { ControlError } from "./types.js";
 import { nowIso } from "./ids.js";
 import type {
   BuilderAdapter,
+  CycleSnapshot,
   ProgramControlAdapter,
   ReviewerAdapter,
   RoleAdapter,
@@ -31,9 +32,26 @@ export interface DispatcherAdapters {
   reviewer: ReviewerAdapter;
 }
 
+/**
+ * Context handed to the injectable Git reality verifier before a Builder
+ * CANDIDATE_READY result may be accepted. Fake-adapter tests leave the hook
+ * unset (or it is skipped for adapter_id "fake-builder").
+ */
+export interface GitRealityContext {
+  cycle: CycleSnapshot;
+  request: CanonicalEnvelope<ControlRequestBody>;
+  dispatch: DispatchRecord;
+  candidate_sha: string;
+  adapter_id: string;
+}
+
 export interface DispatcherOptions {
   owner: string;
   leaseMs: number;
+  /** When > 0, renew the dispatch lease at this interval while an async adapter runs. */
+  heartbeatMs?: number;
+  /** Injectable Git reality verifier for Builder CANDIDATE_READY results. */
+  gitReality?: (ctx: GitRealityContext) => void | Promise<void>;
 }
 
 export interface StepResult {
@@ -70,7 +88,7 @@ export class Dispatcher {
     return this.handoff.recoverExpiredDispatches(now ?? this.handoff.store.now());
   }
 
-  step(cycleId: string): StepResult {
+  async step(cycleId: string): Promise<StepResult> {
     this.recover();
     let cycle = this.handoff.requireCycle(cycleId);
     switch (cycle.state) {
@@ -95,13 +113,13 @@ export class Dispatcher {
     }
   }
 
-  runUntilStable(cycleId: string, maxSteps = 48): StepResult {
+  async runUntilStable(cycleId: string, maxSteps = 48): Promise<StepResult> {
     let last: StepResult = {
       cycle: this.handoff.requireCycle(cycleId),
       action: "start",
     };
     for (let i = 0; i < maxSteps; i += 1) {
-      last = this.step(cycleId);
+      last = await this.step(cycleId);
       const state = last.cycle.state;
       if (
         state === "ACCEPTED" ||
@@ -236,7 +254,10 @@ export class Dispatcher {
     return this.adapters.reviewer;
   }
 
-  private invokeRole(cycle: CycleRecord, role: DispatchRole): StepResult {
+  private async invokeRole(
+    cycle: CycleRecord,
+    role: DispatchRole,
+  ): Promise<StepResult> {
     const request = this.requireCurrentRequest(cycle);
     if (request.body.target_role !== role) {
       throw new ControlError(
@@ -314,40 +335,91 @@ export class Dispatcher {
       throw err;
     }
 
+    const abort = new AbortController();
+    const stopHeartbeat = this.startLeaseHeartbeat(dispatch, abort);
     let raw: unknown;
     try {
       if (role === "program_control") {
-        raw = this.adapters.programControl.decide({
+        raw = await this.adapters.programControl.decide({
           cycle: this.handoff.snapshot(cycle),
           envelopes: this.handoff.listEnvelopes(cycle.cycle_id),
         });
       } else if (role === "builder") {
-        raw = this.adapters.builder.build({
+        raw = await this.adapters.builder.build({
           cycle: this.handoff.snapshot(cycle),
           request,
+          dispatch: {
+            dispatch_id: dispatch.dispatch_id,
+            attempt_number: dispatch.attempt_number,
+            fence_token: dispatch.fence_token,
+            lease_expires_at: dispatch.lease_expires_at,
+          },
+          signal: abort.signal,
         });
       } else {
-        raw = this.adapters.reviewer.review({
+        raw = await this.adapters.reviewer.review({
           cycle: this.handoff.snapshot(cycle),
           request,
         });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.handoff.rejectResult({
-        dispatchId: dispatch.dispatch_id,
-        fenceToken: dispatch.fence_token,
-        failureClass: "RUNTIME_ERROR",
-        detail: message,
-      });
+      const failureClass: FailureClass =
+        abort.signal.aborted && message.includes("lease")
+          ? "RESULT_STALE"
+          : "RUNTIME_ERROR";
+      try {
+        this.handoff.rejectResult({
+          dispatchId: dispatch.dispatch_id,
+          fenceToken: dispatch.fence_token,
+          failureClass,
+          detail: message,
+        });
+      } catch {
+        // fence may already be non-CLAIMED after expiry/recovery
+      }
       return {
         cycle: this.handoff.requireCycle(cycle.cycle_id),
-        action: "runtime_error",
+        action: failureClass === "RESULT_STALE" ? "result_stale" : "runtime_error",
         detail: { message },
       };
+    } finally {
+      stopHeartbeat();
     }
 
     return this.acceptRoleOutput(cycle, request, dispatch, raw, role);
+  }
+
+  /**
+   * Renew the same claimed fence while a long adapter invocation runs.
+   * Heartbeat failure aborts the adapter via AbortSignal; it does not
+   * invent workflow authority — SQLite fencing still decides acceptance.
+   */
+  private startLeaseHeartbeat(
+    dispatch: DispatchRecord,
+    abort: AbortController,
+  ): () => void {
+    const ms = this.options.heartbeatMs ?? 0;
+    if (!(ms > 0)) {
+      return () => undefined;
+    }
+    const timer = setInterval(() => {
+      try {
+        const live = this.handoff.renewDispatchLease(
+          dispatch.dispatch_id,
+          dispatch.fence_token,
+          this.options.leaseMs,
+        );
+        dispatch.lease_expires_at = live.lease_expires_at;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        abort.abort(message);
+        clearInterval(timer);
+      }
+    }, ms);
+    // Allow Node to exit if only the heartbeat remains (tests / short runs).
+    timer.unref?.();
+    return () => clearInterval(timer);
   }
 
   private expectAuthority(
@@ -377,13 +449,13 @@ export class Dispatcher {
     return null;
   }
 
-  private acceptRoleOutput(
+  private async acceptRoleOutput(
     cycle: CycleRecord,
     request: CanonicalEnvelope<ControlRequestBody>,
     dispatch: DispatchRecord,
     raw: unknown,
     role: DispatchRole,
-  ): StepResult {
+  ): Promise<StepResult> {
     let parsed: CanonicalEnvelope;
     try {
       parsed = parseCanonicalEnvelope(raw);
@@ -426,7 +498,7 @@ export class Dispatcher {
     if (role === "reviewer") {
       return this.acceptReviewer(cycle, request, dispatch, parsed);
     }
-    return this.acceptBuilder(cycle, dispatch, parsed);
+    return this.acceptBuilder(cycle, request, dispatch, parsed);
   }
 
   private acceptProgramControl(
@@ -537,12 +609,40 @@ export class Dispatcher {
     };
   }
 
-  private acceptBuilder(
+  private async acceptBuilder(
     cycle: CycleRecord,
+    request: CanonicalEnvelope<ControlRequestBody>,
     dispatch: DispatchRecord,
     parsed: CanonicalEnvelope,
-  ): StepResult {
+  ): Promise<StepResult> {
     const body = parsed.body as BuilderResultBody;
+    if (body.status === "CANDIDATE_READY" && body.candidate_sha) {
+      const adapterId = this.adapters.builder.identity.adapter_id;
+      if (adapterId !== "fake-builder" && this.options.gitReality) {
+        try {
+          await this.options.gitReality({
+            cycle: this.handoff.snapshot(cycle),
+            request,
+            dispatch,
+            candidate_sha: body.candidate_sha,
+            adapter_id: adapterId,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          this.handoff.rejectResult({
+            dispatchId: dispatch.dispatch_id,
+            fenceToken: dispatch.fence_token,
+            failureClass: "RESULT_INVALID",
+            detail: `git reality: ${message}`,
+          });
+          return {
+            cycle: this.handoff.requireCycle(cycle.cycle_id),
+            action: "result_invalid",
+            detail: { reason: message },
+          };
+        }
+      }
+    }
     this.handoff.store.runImmediate(() => {
       this.handoff.acceptResult({
         dispatchId: dispatch.dispatch_id,

@@ -12,6 +12,7 @@
   "scripts": {
     "build": "tsc",
     "test": "npm run build && node --test \"dist/**/*.test.js\"",
+    "canary": "npm run build && node dist/canary/b1-session-replacement-canary.js",
     "owata": "node dist/cli.js"
   },
   "engines": {
