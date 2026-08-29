@@ -11,7 +11,7 @@ Recorded: 2026-08-29
 
 ## Candidate SHA
 
-`3a47d18a2561a496b901eac87a0518770c9a94de`
+`aa3ed94d5f31dca23b3c461d94491c92543d0de9`
 
 ## Schema v5
 
