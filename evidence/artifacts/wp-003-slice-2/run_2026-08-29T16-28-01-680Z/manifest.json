@@ -34,10 +34,10 @@
     "attempt1-metadata.json": "7d1f311d65749cf6a7124b8c9c9133a02087d9438f6426bc8aa2943dc93b2f60",
     "attempt2-instruction.txt": "eafa29b1961fd5b54b05992d4ea52808275b9c552a8510953c58a3aaf3ddfb35",
     "attempt2-metadata.json": "ffe70b9d3d884246df3055bda0ae7a5a9b413562e61e036e2f7c47da4aaba6b2",
-    "attempt2-result-envelope.json": "41818124ba4077f1b3216ddbe8b112ad81da2f33ca3e70ee4f29abfcaf31df72",
+    "attempt2-result-envelope.json": "be7637418a4125fe89eb195fb62d8339b45ebec49e56529b26ebed619986b4a8",
     "task-repo.bundle": "234ad515ef7b778e59bb824cf495c46ecf740d0bc69fb7cd53adc6e03dc01690",
     "invocation-flags.json": "49cb8af5cfd646f22e1b4a37c63c5b2c4f92226621a90296d7df804c0b3cffca"
   },
   "evidence_rel": "evidence/artifacts/wp-003-slice-2/run_2026-08-29T16-28-01-680Z",
-  "manifest_content_sha256": "79ce78e77d4a4aa6dd43c2abb2907627e203656c53b4855b251edac0bffcb866"
+  "manifest_content_sha256": "898f6b61f28e6fed8cbb7db5f22fd8d6eb51f75191a6a88db5a607ab3815fb2d"
 }
