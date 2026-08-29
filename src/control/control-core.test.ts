@@ -16,6 +16,7 @@ import { eventsJsonlPath, dbPath } from "./db.js";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const claimHoldJs = join(root, "dist", "control", "fixtures", "claim-and-hold.js");
 const claimOnceJs = join(root, "dist", "control", "fixtures", "claim-once.js");
+const flushJsonlJs = join(root, "dist", "control", "fixtures", "flush-jsonl.js");
 
 function tempState(): string {
   return mkdtempSync(join(tmpdir(), "owata-wp001-"));
@@ -271,6 +272,120 @@ test("events: sqlite + jsonl; restart flush without duplication", () => {
       .get(pendingId) as { jsonl_flushed: number };
     assert.equal(row.jsonl_flushed, 1);
     store4.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+function spawnFlush(stateDir: string): Promise<{ code: number | null; out: string; err: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [flushJsonlJs, stateDir], {
+      windowsHide: true,
+    });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (c) => {
+      out += String(c);
+    });
+    child.stderr.on("data", (c) => {
+      err += String(c);
+    });
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, out, err }));
+  });
+}
+
+test("WP001-IR-001 Case A: concurrent flush of one pending event yields one JSONL line", async () => {
+  const dir = tempState();
+  try {
+    const store = ControlStore.open({ stateDir: dir });
+    const project = store.createProject("demo");
+    const work = store.createWork(project.project_id, "task");
+    const pendingId = "evt_single_crash_gap";
+    store.db
+      .prepare(
+        `INSERT INTO events (
+           event_id, ts, event_type, project_id, work_id, payload, jsonl_flushed
+         ) VALUES (?, ?, ?, ?, ?, ?, 0)`,
+      )
+      .run(
+        pendingId,
+        "2026-01-01T00:00:10.000Z",
+        "work.created",
+        project.project_id,
+        work.work_id,
+        JSON.stringify({ concurrent: true }),
+      );
+    store.close();
+
+    const workers = 8;
+    const results = await Promise.all(
+      Array.from({ length: workers }, () => spawnFlush(dir)),
+    );
+    for (const r of results) {
+      assert.equal(r.code, 0, `flush worker failed: ${r.err || r.out}`);
+    }
+
+    const verify = ControlStore.open({ stateDir: dir });
+    const lines = verify.readJsonlEvents();
+    const copies = lines.filter((e) => e.event_id === pendingId);
+    assert.equal(copies.length, 1);
+    const ids = new Set(lines.map((e) => e.event_id));
+    assert.equal(ids.size, lines.length);
+    verify.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("WP001-IR-001 Case B: concurrent flush under many pending events has no dups/losses", async () => {
+  const dir = tempState();
+  try {
+    const store = ControlStore.open({ stateDir: dir });
+    const project = store.createProject("demo");
+    const work = store.createWork(project.project_id, "task");
+    const seeded = store.listEvents().map((e) => e.event_id);
+
+    const pendingCount = 200;
+    const pendingIds: string[] = [];
+    for (let i = 0; i < pendingCount; i += 1) {
+      const id = `evt_multi_${String(i).padStart(4, "0")}`;
+      pendingIds.push(id);
+      store.db
+        .prepare(
+          `INSERT INTO events (
+             event_id, ts, event_type, project_id, work_id, payload, jsonl_flushed
+           ) VALUES (?, ?, ?, ?, ?, ?, 0)`,
+        )
+        .run(
+          id,
+          "2026-01-01T00:02:00.000Z",
+          "work.created",
+          project.project_id,
+          work.work_id,
+          JSON.stringify({ i }),
+        );
+    }
+    store.close();
+
+    const workers = 8;
+    const results = await Promise.all(
+      Array.from({ length: workers }, () => spawnFlush(dir)),
+    );
+    for (const r of results) {
+      assert.equal(r.code, 0, `flush worker failed: ${r.err || r.out}`);
+    }
+
+    const expectedIds = new Set([...seeded, ...pendingIds]);
+    const verify = ControlStore.open({ stateDir: dir });
+    const lines = verify.readJsonlEvents();
+    const seen = lines.map((e) => String(e.event_id));
+    assert.equal(seen.length, expectedIds.size);
+    assert.equal(new Set(seen).size, expectedIds.size);
+    for (const id of expectedIds) {
+      assert.ok(seen.includes(id), `missing event_id ${id}`);
+    }
+    verify.close();
   } finally {
     cleanup(dir);
   }

@@ -445,49 +445,54 @@ export class ControlStore {
 
   /**
    * Project unflushed SQLite events to append-only JSONL without duplication.
-   * SQLite remains authoritative; restart safely completes a crashed flush.
+   * The full read→append→mark sequence runs under BEGIN IMMEDIATE so concurrent
+   * processes cannot both append the same event_id. SQLite remains authoritative;
+   * if append succeeds and the process dies before COMMIT, restart sees the JSONL
+   * line, skips re-append, and converges the flushed marker.
    */
   flushEventJsonl(): number {
-    const path = eventsJsonlPath(this.stateDir);
-    if (!existsSync(path)) {
-      writeFileSync(path, "", "utf8");
-    }
-
-    const existingIds = new Set(
-      this.readJsonlEvents()
-        .map((e) => e.event_id)
-        .filter((id): id is string => typeof id === "string"),
-    );
-
-    const pending = this.db
-      .prepare(
-        `SELECT * FROM events
-         WHERE jsonl_flushed = 0
-         ORDER BY ts ASC, event_id ASC`,
-      )
-      .all() as Record<string, unknown>[];
-
-    let flushed = 0;
-    for (const row of pending) {
-      const event = mapEvent(row);
-      if (!existingIds.has(event.event_id)) {
-        const line = JSON.stringify({
-          event_id: event.event_id,
-          ts: event.ts,
-          event_type: event.event_type,
-          project_id: event.project_id,
-          work_id: event.work_id,
-          payload: event.payload,
-        });
-        appendFileSync(path, `${line}\n`, "utf8");
-        existingIds.add(event.event_id);
+    return this.withTransaction(() => {
+      const path = eventsJsonlPath(this.stateDir);
+      if (!existsSync(path)) {
+        writeFileSync(path, "", "utf8");
       }
-      this.db
-        .prepare("UPDATE events SET jsonl_flushed = 1 WHERE event_id = ?")
-        .run(event.event_id);
-      flushed += 1;
-    }
-    return flushed;
+
+      const existingIds = new Set(
+        this.readJsonlEvents()
+          .map((e) => e.event_id)
+          .filter((id): id is string => typeof id === "string"),
+      );
+
+      const pending = this.db
+        .prepare(
+          `SELECT * FROM events
+           WHERE jsonl_flushed = 0
+           ORDER BY ts ASC, event_id ASC`,
+        )
+        .all() as Record<string, unknown>[];
+
+      let flushed = 0;
+      for (const row of pending) {
+        const event = mapEvent(row);
+        if (!existingIds.has(event.event_id)) {
+          const line = JSON.stringify({
+            event_id: event.event_id,
+            ts: event.ts,
+            event_type: event.event_type,
+            project_id: event.project_id,
+            work_id: event.work_id,
+            payload: event.payload,
+          });
+          appendFileSync(path, `${line}\n`, "utf8");
+          existingIds.add(event.event_id);
+        }
+        this.db
+          .prepare("UPDATE events SET jsonl_flushed = 1 WHERE event_id = ?")
+          .run(event.event_id);
+        flushed += 1;
+      }
+      return flushed;
+    });
   }
 
   private insertEvent(
