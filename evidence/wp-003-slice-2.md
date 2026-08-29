@@ -93,4 +93,5 @@ git diff --check (working tree / post-fix tip) → PASS
 - INITIAL_IMPLEMENTATION_SHA: `9582212d3e840b8cbd4cb5ce778b5d9a651c3588`
 - PRE_REWORK_REVIEW_TARGET: `4c8e792eb34912f4637af855d2f2f5b217f8489f`
 - REWORK_IMPLEMENTATION_SHA: `a10ba5398a96ca779850c61e002e28a236ba17be`
-- REVIEW_TARGET: (evidence-only tip after this evidence commit)
+- REVIEW_TARGET: c1485f067888f8e2fca01db20194e1b383e7aea3
+
