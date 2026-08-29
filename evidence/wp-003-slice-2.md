@@ -94,4 +94,4 @@ git diff --check (working tree / post-fix tip) → PASS
 - PRE_REWORK_REVIEW_TARGET: `4c8e792eb34912f4637af855d2f2f5b217f8489f`
 - REWORK_IMPLEMENTATION_SHA: `a10ba5398a96ca779850c61e002e28a236ba17be`
 - EVIDENCE_BUNDLE_SHA: `c1485f067888f8e2fca01db20194e1b383e7aea3`
-- REVIEW_TARGET: tip of `wp-003/slice-2-real-builder` after this evidence fix commit (see RESULT HEAD)
+- REVIEW_TARGET: see RESULT `HEAD` (branch tip including this evidence identity note)
