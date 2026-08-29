@@ -1887,3 +1887,441 @@ test("R2 F02: recovery target survives reopen; invalid target rejects RETRY", ()
     cleanup(dir);
   }
 });
+
+test("R2 F01 exploit: forged Control Request envelope roles cannot authorize policy (OWATA-REQ-0027-F01)", () => {
+  const dir = tempState();
+  try {
+    const { store, handoff } = openHarness(dir);
+    const project = store.createProject("f01-r3");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-003",
+    });
+    const reqId = "req_forged_pc_body";
+    // Envelope looks Builder-facing; body claims Program Control DECIDE.
+    handoff.persistEnvelope({
+      protocol: PROTOCOL_V1,
+      envelope_id: "env_forged_req",
+      kind: "control_request",
+      cycle_id: cycle.cycle_id,
+      request_id: reqId,
+      from_role: "builder",
+      to_role: "builder",
+      created_at: "2026-06-01T00:00:00.000Z",
+      body: {
+        action: "DECIDE",
+        target_role: "program_control",
+        work_package_ref: "WP-003",
+        base_sha: null,
+        target_sha: null,
+        authoritative_references: ["work-packages/WP-003"],
+        required_capabilities: ["repository_read"],
+        expected_result_kind: "builder_result",
+        stop_condition: null,
+        authorized_by_decision_id: null,
+        authorized_finding_ids: [],
+        retry_of_request_id: null,
+      },
+    });
+    const claim = handoff.claimDispatch({
+      cycleId: cycle.cycle_id,
+      requestId: reqId,
+      targetRole: "program_control",
+      owner: "attacker",
+      leaseMs: 60_000,
+    });
+    const decision = parseCanonicalEnvelope({
+      protocol: PROTOCOL_V1,
+      envelope_id: "env_forged_dec",
+      kind: "program_control_decision",
+      cycle_id: cycle.cycle_id,
+      request_id: reqId,
+      from_role: "program_control",
+      to_role: "dispatcher",
+      created_at: "2026-06-01T00:00:01.000Z",
+      body: pcDecision({
+        decision: "BUILD",
+        install_policy: { on_builder_candidate: "DISPATCH_REVIEW" },
+      }),
+    });
+    handoff.acceptResult({
+      dispatchId: claim.dispatch_id,
+      fenceToken: claim.fence_token,
+      envelope: decision,
+    });
+    assert.throws(
+      () =>
+        handoff.installPolicyFromDecision(cycle.cycle_id, decision.envelope_id, {
+          on_builder_candidate: "DISPATCH_REVIEW",
+        }),
+      (err: unknown) => err instanceof ControlError && err.code === "POLICY_PROVENANCE",
+    );
+    store.db
+      .prepare(
+        `UPDATE cycles SET policy_json = ?, policy_authorized_by_decision_id = ? WHERE cycle_id = ?`,
+      )
+      .run(
+        JSON.stringify({ on_builder_candidate: "DISPATCH_REVIEW" }),
+        decision.envelope_id,
+        cycle.cycle_id,
+      );
+    assert.equal(handoff.mayAutoDispatchReview(handoff.requireCycle(cycle.cycle_id)), false);
+    store.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("R3 F01: Control Request from_role/to_role/expected_result_kind must be canonical", () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock } = openHarness(dir);
+    const project = store.createProject("f01-fields");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-003",
+    });
+    const d = new Dispatcher(
+      handoff,
+      {
+        programControl: new FakeProgramControlAdapter(
+          [
+            pcDecision({
+              decision: "BUILD",
+              install_policy: { on_builder_candidate: "DISPATCH_REVIEW" },
+            }),
+          ],
+          envClock,
+        ),
+        builder: new FakeBuilderAdapter(
+          [{ status: "CANDIDATE_READY", candidate_sha: "sha-a" }],
+          envClock,
+        ),
+        reviewer: new FakeReviewerAdapter([], envClock),
+      },
+      { owner: "d", leaseMs: 5000 },
+    );
+    d.step(cycle.cycle_id);
+    const authId = handoff.requireCycle(cycle.cycle_id).policy_authorized_by_decision_id!;
+    const decision = handoff.getEnvelope(authId)!;
+    const req = handoff
+      .listEnvelopes(cycle.cycle_id)
+      .find((e) => e.request_id === decision.request_id && e.kind === "control_request")!;
+    assert.equal(req.from_role, "dispatcher");
+    assert.equal(req.to_role, "program_control");
+    assert.equal(
+      (req.body as { expected_result_kind: string }).expected_result_kind,
+      "program_control_decision",
+    );
+    assert.equal(handoff.mayAutoDispatchReview(handoff.requireCycle(cycle.cycle_id)), true);
+
+    // Mutate request envelope roles → provenance fails after reopen path
+    store.db
+      .prepare(`UPDATE envelopes SET from_role = 'builder' WHERE envelope_id = ?`)
+      .run(req.envelope_id);
+    assert.equal(handoff.mayAutoDispatchReview(handoff.requireCycle(cycle.cycle_id)), false);
+    store.db
+      .prepare(`UPDATE envelopes SET from_role = 'dispatcher', to_role = 'builder' WHERE envelope_id = ?`)
+      .run(req.envelope_id);
+    assert.equal(handoff.mayAutoDispatchReview(handoff.requireCycle(cycle.cycle_id)), false);
+    store.db
+      .prepare(`UPDATE envelopes SET to_role = 'program_control' WHERE envelope_id = ?`)
+      .run(req.envelope_id);
+    const body = JSON.parse(
+      (store.db.prepare(`SELECT body_json FROM envelopes WHERE envelope_id = ?`).get(req.envelope_id) as {
+        body_json: string;
+      }).body_json,
+    ) as Record<string, unknown>;
+    body.expected_result_kind = "builder_result";
+    store.db
+      .prepare(`UPDATE envelopes SET body_json = ? WHERE envelope_id = ?`)
+      .run(JSON.stringify(body), req.envelope_id);
+    assert.equal(handoff.mayAutoDispatchReview(handoff.requireCycle(cycle.cycle_id)), false);
+    body.expected_result_kind = "program_control_decision";
+    store.db
+      .prepare(`UPDATE envelopes SET body_json = ? WHERE envelope_id = ?`)
+      .run(JSON.stringify(body), req.envelope_id);
+    assert.equal(handoff.mayAutoDispatchReview(handoff.requireCycle(cycle.cycle_id)), true);
+
+    store.close();
+    const again = ControlStore.open({ stateDir: dir });
+    const h2 = new HandoffStore(again);
+    assert.equal(h2.mayAutoDispatchReview(h2.requireCycle(cycle.cycle_id)), true);
+    again.db
+      .prepare(`UPDATE envelopes SET from_role = 'human' WHERE envelope_id = ?`)
+      .run(req.envelope_id);
+    assert.equal(h2.mayAutoDispatchReview(h2.requireCycle(cycle.cycle_id)), false);
+    again.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("R3 F02: accepted Builder request cannot be PC RETRY target (OWATA-REQ-0027-F02)", () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock } = openHarness(dir);
+    const project = store.createProject("f02-accepted");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-003",
+    });
+    const dispatcher = new Dispatcher(
+      handoff,
+      {
+        programControl: new FakeProgramControlAdapter(
+          [
+            pcBuildAwait,
+            pcDecision({ decision: "RETRY", rationale: "bad" }),
+          ],
+          envClock,
+        ),
+        builder: new FakeBuilderAdapter(
+          [{ status: "CANDIDATE_READY", candidate_sha: "sha-ok" }],
+          envClock,
+        ),
+        reviewer: new FakeReviewerAdapter([], envClock),
+      },
+      { owner: "d", leaseMs: 5000 },
+    );
+    dispatcher.step(cycle.cycle_id); // PC BUILD
+    const acceptedReq = handoff.requireCycle(cycle.cycle_id).current_request_id!;
+    dispatcher.step(cycle.cycle_id); // builder success → AWAITING_PC
+    assert.ok(handoff.acceptedDispatch(cycle.cycle_id, acceptedReq));
+
+    handoff.transition(cycle.cycle_id, "RECOVERY_REQUIRED", {
+      recovery_reason: "forged",
+      recovery_target_request_id: acceptedReq,
+      current_request_id: null,
+    });
+    const beforeEnvs = handoff.listEnvelopes(cycle.cycle_id).length;
+    const result = dispatcher.step(cycle.cycle_id); // PC RETRY should reject
+    assert.equal(result.action, "result_invalid");
+    assert.equal(
+      handoff.listEnvelopes(cycle.cycle_id).filter((e) => {
+        const b = e.body as { retry_of_request_id?: string | null };
+        return e.kind === "control_request" && b.retry_of_request_id === acceptedReq;
+      }).length,
+      0,
+    );
+    assert.ok(handoff.listEnvelopes(cycle.cycle_id).length >= beforeEnvs);
+    store.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("R3 F02: target without durable failure evidence is rejected", () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock } = openHarness(dir);
+    const project = store.createProject("f02-noev");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-003",
+    });
+    const orphanReq = "req_orphan_build";
+    handoff.persistEnvelope({
+      protocol: PROTOCOL_V1,
+      envelope_id: store.nextId("env"),
+      kind: "control_request",
+      cycle_id: cycle.cycle_id,
+      request_id: orphanReq,
+      from_role: "program_control",
+      to_role: "builder",
+      created_at: store.now().toISOString(),
+      body: {
+        action: "BUILD",
+        target_role: "builder",
+        work_package_ref: "WP-003",
+        base_sha: null,
+        target_sha: null,
+        authoritative_references: ["work-packages/WP-003"],
+        required_capabilities: ["repository_read"],
+        expected_result_kind: "builder_result",
+        stop_condition: null,
+        authorized_by_decision_id: null,
+        authorized_finding_ids: [],
+        retry_of_request_id: null,
+      },
+    });
+    handoff.transition(cycle.cycle_id, "RECOVERY_REQUIRED", {
+      recovery_reason: "forged_lineage",
+      recovery_target_request_id: orphanReq,
+    });
+    assert.throws(
+      () => handoff.assertRetryableRecoveryTarget(handoff.requireCycle(cycle.cycle_id), orphanReq),
+      (err: unknown) => err instanceof ControlError && err.code === "PROTOCOL",
+    );
+    const d = new Dispatcher(
+      handoff,
+      {
+        programControl: new FakeProgramControlAdapter(
+          [pcDecision({ decision: "RETRY" })],
+          envClock,
+        ),
+        builder: new FakeBuilderAdapter([], envClock),
+        reviewer: new FakeReviewerAdapter([], envClock),
+      },
+      { owner: "d", leaseMs: 5000 },
+    );
+    assert.equal(d.step(cycle.cycle_id).action, "result_invalid");
+    store.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("R3 F03: Human Gate preserves recovery target through Human RETRY to PC RETRY", () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock, clock } = openHarness(dir);
+    const project = store.createProject("f03-gate");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-003",
+      maxDispatchRetries: 1,
+    });
+    let failOnce = true;
+    const builder = new FakeBuilderAdapter(
+      [{ status: "CANDIDATE_READY", candidate_sha: "sha-after-gate" }],
+      envClock,
+    );
+    builder.build = (input) => {
+      if (failOnce) {
+        failOnce = false;
+        builder.invocations += 1;
+        throw new Error("builder-crash");
+      }
+      builder.invocations += 1;
+      return {
+        protocol: PROTOCOL_V1,
+        envelope_id: envClock.id("env"),
+        kind: "builder_result",
+        cycle_id: input.cycle.cycle_id,
+        request_id: input.request.request_id,
+        from_role: "builder",
+        to_role: "program_control",
+        created_at: envClock.now(),
+        body: {
+          status: "CANDIDATE_READY",
+          candidate_sha: "sha-after-gate",
+          evidence_refs: ["evidence/gate-retry"],
+          notes: null,
+        },
+      };
+    };
+    const pc = new FakeProgramControlAdapter(
+      [
+        pcBuildAwait,
+        pcDecision({
+          decision: "HUMAN_GATE",
+          rationale: "ask",
+          human_gate_purpose: "Retry failed build?",
+          human_gate_choices: ["RETRY", "ABORT"],
+        }),
+        pcDecision({ decision: "RETRY", rationale: "human authorized" }),
+      ],
+      envClock,
+    );
+    const dispatcher = new Dispatcher(
+      handoff,
+      {
+        programControl: pc,
+        builder,
+        reviewer: new FakeReviewerAdapter([], envClock),
+      },
+      { owner: "d", leaseMs: 500 },
+    );
+    dispatcher.step(cycle.cycle_id); // PC BUILD
+    const failedReq = handoff.requireCycle(cycle.cycle_id).current_request_id!;
+    dispatcher.step(cycle.cycle_id); // builder crash
+    clock.advanceMs(1000);
+    handoff.recoverExpiredDispatches(store.now());
+    assert.equal(dispatcher.step(cycle.cycle_id).action, "retry_budget");
+    assert.equal(
+      handoff.requireCycle(cycle.cycle_id).recovery_target_request_id,
+      failedReq,
+    );
+
+    const gateStep = dispatcher.step(cycle.cycle_id); // PC HUMAN_GATE
+    assert.equal(gateStep.action, "pc_decision");
+    assert.equal(handoff.requireCycle(cycle.cycle_id).state, "HUMAN_GATE");
+    assert.equal(
+      handoff.requireCycle(cycle.cycle_id).recovery_target_request_id,
+      failedReq,
+    );
+
+    store.close();
+    const again = ControlStore.open({ stateDir: dir });
+    const h2 = new HandoffStore(again);
+    assert.equal(h2.requireCycle(cycle.cycle_id).recovery_target_request_id, failedReq);
+    const gate = h2.openGateForCycle(cycle.cycle_id)!;
+    h2.answerHumanGate({ gateId: gate.gate_id, selectedChoice: "RETRY", note: "go" });
+    const env2 = envelopeClock(again);
+    // Rebuild PC script position: first decide already consumed in prior process;
+    // after reopen we need a PC that returns RETRY when AWAITING_PC after human.
+    const pc2 = new FakeProgramControlAdapter(
+      [pcDecision({ decision: "RETRY", rationale: "after human" })],
+      env2,
+    );
+    let fail2 = true;
+    const builder2 = new FakeBuilderAdapter(
+      [{ status: "CANDIDATE_READY", candidate_sha: "sha-after-gate" }],
+      env2,
+    );
+    builder2.build = (input) => {
+      if (fail2) {
+        // should not fail on semantic retry path if failOnce already cleared — use success only
+        fail2 = false;
+      }
+      builder2.invocations += 1;
+      return {
+        protocol: PROTOCOL_V1,
+        envelope_id: env2.id("env"),
+        kind: "builder_result",
+        cycle_id: input.cycle.cycle_id,
+        request_id: input.request.request_id,
+        from_role: "builder",
+        to_role: "program_control",
+        created_at: env2.now(),
+        body: {
+          status: "CANDIDATE_READY",
+          candidate_sha: "sha-after-gate",
+          evidence_refs: ["evidence/gate-retry"],
+          notes: null,
+        },
+      };
+    };
+    const d2 = new Dispatcher(
+      h2,
+      {
+        programControl: pc2,
+        builder: builder2,
+        reviewer: new FakeReviewerAdapter([], env2),
+      },
+      { owner: "d2", leaseMs: 5000 },
+    );
+    const humanApplied = d2.step(cycle.cycle_id);
+    assert.equal(humanApplied.action, "human_gate_applied");
+    assert.equal(h2.requireCycle(cycle.cycle_id).state, "AWAITING_PC");
+    assert.equal(h2.requireCycle(cycle.cycle_id).recovery_target_request_id, failedReq);
+
+    const retried = d2.step(cycle.cycle_id); // PC RETRY
+    assert.equal(retried.action, "pc_decision");
+    const live = h2.requireCycle(cycle.cycle_id);
+    assert.equal(live.state, "DISPATCHING_BUILD");
+    const body = h2
+      .listEnvelopes(cycle.cycle_id)
+      .find((e) => e.request_id === live.current_request_id)!.body as {
+      retry_of_request_id: string;
+    };
+    assert.equal(body.retry_of_request_id, failedReq);
+    const built = d2.step(cycle.cycle_id);
+    assert.equal(built.action, "builder_result");
+    assert.equal(h2.requireCycle(cycle.cycle_id).latest_candidate_sha, "sha-after-gate");
+    again.close();
+  } finally {
+    cleanup(dir);
+  }
+});

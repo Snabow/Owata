@@ -16,8 +16,10 @@ Recorded: 2026-08-29
 | --- | --- | --- |
 | **INDEPENDENT REVIEW TARGET SHA (R0)** | `992a4d286586bc1eab0776fcc96e2ea79c0f1346` | Slice 1 R0 HEAD reviewed under OWATA-REQ-0023 (REWORK) |
 | **IMPLEMENTATION SHA (R1)** | `56934e838e8b2aa7b031c4bd20134d29b2c236c5` | Slice 1 R1 rework resolving the four confirmed findings |
-| **INDEPENDENT REVIEW TARGET SHA (R1)** | `a3be07aabe442c803e89b94ae7639113913bf103` | R1 review HEAD (evidence-only after R1 implementation); OWATA-REQ-0025 disposition **REWORK** |
+| **INDEPENDENT REVIEW TARGET SHA (R1)** | `a3be07aabe442c803e89b94ae7639113913bf103` | R1 review HEAD; OWATA-REQ-0025 disposition **REWORK** |
 | **IMPLEMENTATION SHA (R2)** | `00694824e0186ebf8cd0939901227c1cc46014a0` | Slice 1 R2: F01 policy provenance + F02 PC semantic RETRY + killed-child fence regression |
+| **INDEPENDENT REVIEW TARGET SHA (R2)** | `5414686a7864749655d54318efbfab0028d832b4` | R2 review HEAD; OWATA-REQ-0027 disposition **REWORK** (F01 request envelope roles; F02 accepted target; F03 Human Gate) |
+| **IMPLEMENTATION SHA (R3)** | *(recorded after R3 land)* | Slice 1 R3: complete PC request authority + failed-target proof + Human Gate recovery retention |
 
 Any later evidence-only follow-up that only fills this table is **not** the implementation SHA.
 
@@ -95,9 +97,56 @@ Durable `cycles.recovery_target_request_id` retains the failed Builder/Reviewer 
 
 The committed PC interruption test now seeds `DISPATCHING_PC` without a prior attempt, records the **child process** `dispatch_id`/`fence_token`, and asserts that exact child fence cannot accept after recovery.
 
+## Slice 1 R3 — OWATA-REQ-0027 finding resolutions (OWATA-REQ-0028)
+
+Baseline / prior review HEAD: `5414686a7864749655d54318efbfab0028d832b4`.
+
+### F01 — Canonical PC Control Request authority — RESOLVED
+
+`assertPolicyProvenance()` now requires the correlated Control Request envelope fields:
+
+- `from_role = dispatcher`
+- `to_role = program_control`
+- `body.target_role = program_control`
+- `body.action = DECIDE | ADJUDICATE`
+- `body.expected_result_kind = program_control_decision`
+
+in addition to the accepted PC dispatch + exact `install_policy` match. The OWATA-REQ-0027-F01 exploit (Builder-facing envelope roles with PC body) is a regression.
+
+### F02 — Semantic RETRY failed-target proof — RESOLVED
+
+`assertRetryableRecoveryTarget()` proves:
+
+- active recovery lineage (`recovery_reason`)
+- pointer match
+- Builder/Reviewer canonical request
+- **no ACCEPTED dispatch**
+- durable failure evidence from dispatches (REJECTED/EXPIRED/RECOVERED) and/or events (`recovery_required` / `capability_blocked` / `result_rejected`)
+
+Accepted requests cannot be replayed via PC RETRY.
+
+### F03 — Human Gate preserves recovery target — RESOLVED
+
+Entering `HUMAN_GATE` no longer clears `recovery_target_request_id`. Human RETRY returns to Program Control with the target retained; PC then issues semantic RETRY. ACCEPT/ABORT still clear the target.
+
+### PC semantic RETRY chain (authoritative)
+
+```text
+failed Builder/Reviewer request A
+→ durable failure evidence + recovery_target_request_id=A
+→ RECOVERY_REQUIRED
+→ PC ADJUDICATE (P)  [does not erase A]
+→ optional HUMAN_GATE (preserves A) → Human RETRY → AWAITING_PC
+→ PC Decision RETRY
+→ new request B (new request_id, retry_of_request_id=A, authorized_by_decision_id=Decision)
+→ DISPATCHING_BUILD | DISPATCHING_REVIEW
+```
+
+Distinct from automatic dispatch retry (same `request_id`, new attempt/fence).
+
 ## Schema v5
 
-Exact migration chain remains `1→2→3→4→5` (no version bump for R2).
+Exact migration chain remains `1→2→3→4→5` (no version bump for R2/R3).
 
 Fresh databases migrate through the chain to v5. Real v4 rows survive. Additive columns on open / migrateToV5:
 
@@ -155,7 +204,7 @@ Program Control BUILD (+ install `DISPATCH_REVIEW` provenance) → Builder `sha-
 
 Request action sequence: `DECIDE, BUILD, REVIEW, DECIDE, REWORK, REVIEW, DECIDE`.
 
-## Tests (R2)
+## Tests (R3)
 
 ```text
 $ npm ci --ignore-scripts
@@ -168,7 +217,7 @@ owata@0.0.1-genesis
 `-- typescript@5.9.3
 
 $ npm test
-80 pass / 0 fail
+85 pass / 0 fail
 
 $ npm run build
 exit 0
@@ -176,11 +225,11 @@ exit 0
 $ git diff --check
 exit 0
 
-$ git diff --check a3be07aabe442c803e89b94ae7639113913bf103..HEAD
+$ git diff --check 5414686a7864749655d54318efbfab0028d832b4..HEAD
 exit 0
 ```
 
-R2 regressions cover F01 adversarial provenance (forged from_role, unaccepted Decision, mismatched result_envelope_id, cross-cycle, null/mismatched install_policy, reopen) and F02 Builder/Reviewer PC semantic RETRY + recovery-target reopen + invalid target rejection, plus corrected killed-child PC fence regression. Prior Slice 1 / WP-000/001/002 suites remain green.
+R3 regressions cover F01 forged request envelope roles, F02 accepted-target / no-evidence rejection, and F03 Human Gate recovery retention through reopen → Human RETRY → PC RETRY. Prior suites remain green.
 
 ## Provider integration
 

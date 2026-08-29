@@ -619,9 +619,10 @@ export class Dispatcher {
           purpose: body.human_gate_purpose ?? "Human gate",
           allowedChoices: body.human_gate_choices ?? ["ACCEPT", "ABORT"],
         });
+        // Preserve recovery_target_request_id through HUMAN_GATE so Human RETRY
+        // can return to PC with enough provenance for a PC semantic RETRY.
         return this.handoff.transition(cycle.cycle_id, "HUMAN_GATE", {
           current_request_id: null,
-          recovery_target_request_id: null,
         });
       case "ABORT":
         return this.handoff.transition(cycle.cycle_id, "ABORTED", {
@@ -648,40 +649,8 @@ export class Dispatcher {
         "RETRY requires a durable recovery_target_request_id",
       );
     }
-    if (failedId === cycle.current_request_id) {
-      throw new ControlError(
-        "PROTOCOL",
-        "RETRY recovery target must not be the accepted PC recovery request",
-      );
-    }
-    const failed = this.handoff
-      .listEnvelopes(cycle.cycle_id)
-      .find(
-        (e) => e.kind === "control_request" && e.request_id === failedId,
-      ) as CanonicalEnvelope<ControlRequestBody> | undefined;
-    if (!failed || failed.cycle_id !== cycle.cycle_id) {
-      throw new ControlError(
-        "PROTOCOL",
-        "RETRY recovery target Control Request missing or cycle mismatch",
-      );
-    }
-    const role = failed.body.target_role;
-    if (role !== "builder" && role !== "reviewer") {
-      throw new ControlError(
-        "PROTOCOL",
-        "RETRY recovery target must be a Builder or Reviewer Control Request",
-      );
-    }
-    if (
-      failed.body.action !== "BUILD" &&
-      failed.body.action !== "REWORK" &&
-      failed.body.action !== "REVIEW"
-    ) {
-      throw new ControlError(
-        "PROTOCOL",
-        `RETRY cannot resume action ${failed.body.action}`,
-      );
-    }
+    const failed = this.handoff.assertRetryableRecoveryTarget(cycle, failedId);
+    const role = failed.body.target_role as "builder" | "reviewer";
 
     const ts = nowIso(() => this.handoff.store.now());
     const requestId = this.handoff.store.nextId("req");

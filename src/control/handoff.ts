@@ -258,10 +258,28 @@ export class HandoffStore {
         "Policy Decision request envelope missing",
       );
     }
+    if (request.kind !== "control_request") {
+      throw new ControlError(
+        "POLICY_PROVENANCE",
+        "Policy Decision must correlate with a control_request",
+      );
+    }
     if (request.cycle_id !== cycleId) {
       throw new ControlError(
         "POLICY_PROVENANCE",
         "Policy Decision request cycle mismatch",
+      );
+    }
+    if (request.from_role !== "dispatcher") {
+      throw new ControlError(
+        "POLICY_PROVENANCE",
+        "PC Control Request from_role must be dispatcher",
+      );
+    }
+    if (request.to_role !== "program_control") {
+      throw new ControlError(
+        "POLICY_PROVENANCE",
+        "PC Control Request to_role must be program_control",
       );
     }
     if (request.body.target_role !== "program_control") {
@@ -277,6 +295,12 @@ export class HandoffStore {
       throw new ControlError(
         "POLICY_PROVENANCE",
         "Policy Decision must correlate with DECIDE/ADJUDICATE",
+      );
+    }
+    if (request.body.expected_result_kind !== "program_control_decision") {
+      throw new ControlError(
+        "POLICY_PROVENANCE",
+        "PC Control Request expected_result_kind must be program_control_decision",
       );
     }
 
@@ -360,6 +384,112 @@ export class HandoffStore {
       cycle.policy_authorized_by_decision_id,
       cycle.policy,
     );
+  }
+
+  /**
+   * Program Control semantic RETRY may only resume a genuinely failed Builder/Reviewer
+   * request for the current recovery lineage. recovery_target_request_id alone is not proof.
+   */
+  assertRetryableRecoveryTarget(
+    cycle: CycleRecord,
+    requestId: string,
+  ): CanonicalEnvelope<ControlRequestBody> {
+    if (!cycle.recovery_reason) {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY requires an active recovery lineage (recovery_reason)",
+      );
+    }
+    if (cycle.recovery_target_request_id !== requestId) {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY recovery_target_request_id mismatch",
+      );
+    }
+    if (requestId === cycle.current_request_id) {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY recovery target must not be the accepted PC recovery request",
+      );
+    }
+    const failed = this.listEnvelopes(cycle.cycle_id).find(
+      (e) => e.kind === "control_request" && e.request_id === requestId,
+    ) as CanonicalEnvelope<ControlRequestBody> | undefined;
+    if (!failed || failed.cycle_id !== cycle.cycle_id) {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY recovery target Control Request missing or cycle mismatch",
+      );
+    }
+    const role = failed.body.target_role;
+    if (role !== "builder" && role !== "reviewer") {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY recovery target must be a Builder or Reviewer Control Request",
+      );
+    }
+    if (failed.to_role !== role) {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY recovery target to_role must match body.target_role",
+      );
+    }
+    if (
+      failed.body.action !== "BUILD" &&
+      failed.body.action !== "REWORK" &&
+      failed.body.action !== "REVIEW"
+    ) {
+      throw new ControlError(
+        "PROTOCOL",
+        `RETRY cannot resume action ${failed.body.action}`,
+      );
+    }
+    if (this.acceptedDispatch(cycle.cycle_id, requestId)) {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY cannot target a request that already has an ACCEPTED result",
+      );
+    }
+    if (!this.hasDurableFailureEvidence(cycle.cycle_id, requestId)) {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY recovery target lacks durable failure/recovery evidence",
+      );
+    }
+    return failed;
+  }
+
+  /** Durable failure evidence reconstructible from SQLite (dispatches and/or events). */
+  hasDurableFailureEvidence(cycleId: string, requestId: string): boolean {
+    const rows = this.store.db
+      .prepare(
+        `SELECT state FROM dispatches WHERE cycle_id = ? AND request_id = ?`,
+      )
+      .all(cycleId, requestId) as Array<{ state: string }>;
+    if (
+      rows.some(
+        (r) =>
+          r.state === "REJECTED" ||
+          r.state === "EXPIRED" ||
+          r.state === "RECOVERED",
+      )
+    ) {
+      return true;
+    }
+    return this.store.listEvents().some((e) => {
+      if (
+        e.event_type !== "cycle.recovery_required" &&
+        e.event_type !== "cycle.capability_blocked" &&
+        e.event_type !== "cycle.result_rejected"
+      ) {
+        return false;
+      }
+      if (String(e.payload.request_id ?? "") !== requestId) return false;
+      if (e.payload.cycle_id != null && String(e.payload.cycle_id) !== cycleId) {
+        return false;
+      }
+      return true;
+    });
   }
 
   getCycle(cycleId: string): CycleRecord | undefined {
