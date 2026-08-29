@@ -914,7 +914,7 @@ test("WP002-IR-004: repair provenance and ordering gates", () => {
   }
 });
 
-test("WP002-IR-005 + migration: exact v1→v3 preserves rows; v0/future rejected", () => {
+test("WP002-IR-005 + migration: exact v1→v4 preserves rows; v0/future rejected", () => {
   const v1dir = tempState();
   try {
     createExactV1Database(v1dir);
@@ -930,6 +930,13 @@ test("WP002-IR-005 + migration: exact v1→v3 preserves rows; v0/future rejected
     assert.equal(work.repair_count, 0);
     assert.equal(work.max_repairs, 1);
     assert.equal(work.failure_reason, null);
+    // Migrated events receive unique event_seq.
+    const seqs = store.listEvents().map((e) => e.event_seq);
+    assert.equal(new Set(seqs).size, seqs.length);
+    assert.deepEqual(
+      seqs,
+      [...seqs].sort((a, b) => a - b),
+    );
     store.close();
 
     const reopen = ControlStore.open({ stateDir: v1dir });
@@ -1117,4 +1124,209 @@ test("repair changes failing cause (not force verifier PASS)", () => {
       .status,
     "PASS",
   );
+});
+
+function workLifecycleTypes(store: ControlStore, workId: string): string[] {
+  return store
+    .listEvents()
+    .filter((e) => e.work_id === workId)
+    .map((e) => e.event_type);
+}
+
+test("WP002-IR-007: fixed-timestamp lifecycle has deterministic event_seq order", () => {
+  const dir = tempState();
+  const fixed = new Date("2026-06-01T12:00:00.000Z");
+  try {
+    const store = ControlStore.open({
+      stateDir: dir,
+      clock: () => fixed,
+    });
+    seedSumTwo(store, { a: 2, b: 3, expected: 5, bug: false });
+    const result = runOnce(store, "w1", 5000, { now: fixed });
+    assert.ok(result?.completed);
+    const types = workLifecycleTypes(store, result.work.work_id);
+    const expected = [
+      "work.created",
+      "work.claimed",
+      "work.attempt_started",
+      "work.execution_started",
+      "work.execution_finished",
+      "work.attempt_finished",
+      "work.verification_passed",
+      "work.completed",
+    ];
+    assert.deepEqual(types, expected);
+
+    for (let i = 0; i < 20; i += 1) {
+      const againDir = tempState();
+      try {
+        const s = ControlStore.open({
+          stateDir: againDir,
+          clock: () => fixed,
+        });
+        seedSumTwo(s, { a: 2, b: 3, expected: 5, bug: false });
+        const r = runOnce(s, "w1", 5000, { now: fixed });
+        assert.ok(r?.completed);
+        assert.deepEqual(workLifecycleTypes(s, r.work.work_id), expected);
+        const sqlite = s.listEvents().map((e) => ({
+          seq: e.event_seq,
+          type: e.event_type,
+          id: e.event_id,
+        }));
+        const jsonl = s.readJsonlEvents().map((e) => ({
+          seq: Number(e.event_seq),
+          type: String(e.event_type),
+          id: String(e.event_id),
+        }));
+        assert.deepEqual(jsonl, sqlite);
+        s.close();
+      } finally {
+        cleanup(againDir);
+      }
+    }
+    store.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("WP002-IR-007: SETUP_ERROR and EXEC_ERROR event order truthful", () => {
+  const dir = tempState();
+  const fixed = new Date("2026-06-01T13:00:00.000Z");
+  try {
+    const store = ControlStore.open({
+      stateDir: dir,
+      clock: () => fixed,
+    });
+    const project = store.createProject("ord");
+    const bare = store.createWork(project.project_id, "nospec");
+    const setup = runOnce(store, "w1", 5000, { now: fixed });
+    assert.ok(setup?.failed);
+    assert.deepEqual(workLifecycleTypes(store, bare.work_id), [
+      "work.created",
+      "work.claimed",
+      "work.attempt_started",
+      "work.attempt_finished",
+      "work.failed",
+    ]);
+
+    const taskType = "exec_ord";
+    registerTaskHandler({
+      taskType,
+      execute: () => {
+        throw new Error("x");
+      },
+      verify: () => ({ status: "PASS", detail: "n/a" }),
+      repair: () => null,
+    });
+    const work = store.createWork(project.project_id, "ex", {
+      taskType,
+      taskInput: {},
+      maxRepairs: 0,
+    });
+    const ex = runOnce(store, "w2", 5000, { now: fixed });
+    assert.ok(ex?.failed);
+    const types = workLifecycleTypes(store, work.work_id);
+    assert.deepEqual(types, [
+      "work.created",
+      "work.claimed",
+      "work.attempt_started",
+      "work.execution_started",
+      "work.execution_finished",
+      "work.attempt_finished",
+      "work.failed",
+    ]);
+    unregisterTaskHandler(taskType);
+    store.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("WP002-IR-007: FAIL→repair→pass order and SQLite/JSONL parity", () => {
+  const dir = tempState();
+  const fixed = new Date("2026-06-01T14:00:00.000Z");
+  try {
+    const store = ControlStore.open({
+      stateDir: dir,
+      clock: () => fixed,
+    });
+    seedSumTwo(store, { a: 2, b: 3, expected: 5, bug: true }, 1);
+    const result = runOnce(store, "w1", 5000, { now: fixed });
+    assert.ok(result?.completed);
+    const types = workLifecycleTypes(store, result.work.work_id);
+    assert.ok(types.indexOf("work.verification_failed") > -1);
+    assert.ok(types.indexOf("work.repair_applied") > -1);
+    assert.ok(
+      types.indexOf("work.verification_failed") <
+        types.indexOf("work.repair_applied"),
+    );
+    assert.ok(
+      types.indexOf("work.execution_finished") <
+        types.indexOf("work.attempt_finished"),
+    );
+    assert.ok(
+      types.indexOf("work.attempt_finished") <
+        types.indexOf("work.verification_failed"),
+    );
+    const sqlite = store.listEvents().map((e) => e.event_seq);
+    const jsonl = store.readJsonlEvents().map((e) => Number(e.event_seq));
+    assert.deepEqual(jsonl, sqlite);
+    assert.equal(new Set(sqlite).size, sqlite.length);
+    store.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("WP002-IR-010: cyclic execution result → RESULT_ERROR + FAILED", () => {
+  const dir = tempState();
+  const taskType = "cyclic_result";
+  registerTaskHandler({
+    taskType,
+    execute: () => {
+      const output: Record<string, unknown> = { n: 1 };
+      (output as { self?: unknown }).self = output;
+      return { ok: true, output };
+    },
+    verify: () => ({ status: "PASS", detail: "ok" }),
+    repair: () => null,
+  });
+  try {
+    const store = ControlStore.open({ stateDir: dir });
+    const project = store.createProject("cyc");
+    const work = store.createWork(project.project_id, "t", {
+      taskType,
+      taskInput: {},
+      maxRepairs: 0,
+    });
+    const result = runOnce(store, "w1", 5000);
+    assert.ok(result?.failed);
+    assert.equal(result.work.state, "FAILED");
+    assert.match(result.work.failure_reason ?? "", /^result_error:/);
+    const att = store.listAttempts(work.work_id)[0];
+    assert.ok(att.finished_at);
+    assert.equal(att.attempt_outcome, "RESULT_ERROR");
+    assert.equal(att.execution_ok, true);
+    assert.equal(att.result_json, null);
+    const types = workLifecycleTypes(store, work.work_id);
+    assert.ok(types.includes("work.execution_started"));
+    assert.ok(types.includes("work.execution_finished"));
+    assert.ok(types.includes("work.attempt_finished"));
+    assert.equal(types.includes("work.completed"), false);
+    assert.equal(runOnce(store, "w2", 5000), null);
+    store.close();
+
+    const again = ControlStore.open({ stateDir: dir });
+    assert.equal(again.getWork(work.work_id)?.state, "FAILED");
+    assert.equal(
+      again.listAttempts(work.work_id)[0].attempt_outcome,
+      "RESULT_ERROR",
+    );
+    assert.equal(runOnce(again, "w3", 5000), null);
+    again.close();
+  } finally {
+    unregisterTaskHandler(taskType);
+    cleanup(dir);
+  }
 });

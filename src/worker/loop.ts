@@ -210,19 +210,49 @@ export function runOwnedWork(
       );
     }
 
-    const finished = store.finishExecutionAttempt(
-      {
-        workId: current.work_id,
-        leaseToken,
-        workerId,
-        attemptId: attempt.attempt_id,
-        executionOk: executionOk === true,
-        result: executionResult ?? {},
-        verificationStatus,
-        verificationDetail,
-      },
-      now(),
-    );
+    let finished: AttemptRecord;
+    try {
+      finished = store.finishExecutionAttempt(
+        {
+          workId: current.work_id,
+          leaseToken,
+          workerId,
+          attemptId: attempt.attempt_id,
+          executionOk: executionOk === true,
+          result: executionResult ?? {},
+          verificationStatus,
+          verificationDetail,
+        },
+        now(),
+      );
+    } catch (err) {
+      if (isStaleLease(err)) throw err;
+      if (err instanceof ControlError && err.code === "RESULT_SERIALIZE") {
+        store.finalizeAttemptError(
+          {
+            workId: current.work_id,
+            leaseToken,
+            workerId,
+            attemptId: attempt.attempt_id,
+            outcome: "RESULT_ERROR",
+            executionOk: executionOk === true,
+            result: null,
+            detail: sanitizeError(err),
+          },
+          now(),
+        );
+        return failUnderLease(
+          store,
+          current.work_id,
+          leaseToken,
+          workerId,
+          `result_error:${sanitizeError(err)}`,
+          "result_error",
+          now(),
+        );
+      }
+      throw err;
+    }
 
     // Completion gate: both execution success AND verification PASS.
     if (

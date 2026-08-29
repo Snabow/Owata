@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export type ProjectState = "ACTIVE";
 
@@ -12,6 +12,7 @@ export type VerificationStatus = "PASS" | "FAIL";
  * FAIL = finished execute/verify path but overall gate failed (includes false+PASS).
  * SETUP_ERROR = durable spec/handler preparation failed before execute.
  * EXEC_ERROR / VERIFY_ERROR = handler throw during execute/verify.
+ * RESULT_ERROR = execution occurred but result could not be durably represented.
  * ABANDONED = ownership ended before final classification.
  */
 export type AttemptOutcome =
@@ -20,6 +21,7 @@ export type AttemptOutcome =
   | "SETUP_ERROR"
   | "EXEC_ERROR"
   | "VERIFY_ERROR"
+  | "RESULT_ERROR"
   | "ABANDONED";
 
 export type EventType =
@@ -83,6 +85,8 @@ export interface AttemptRecord {
 
 export interface EventRecord {
   event_id: string;
+  /** Authoritative total order. Distinct from event_id (identity) and ts (observational). */
+  event_seq: number;
   ts: string;
   event_type: EventType;
   project_id: string | null;

@@ -155,6 +155,10 @@ function migrate(db: DatabaseSync): void {
     migrateToV3(db);
     version = getSchemaVersion(db);
   }
+  if (version === 3) {
+    migrateToV4(db);
+    version = getSchemaVersion(db);
+  }
 
   if (version !== SCHEMA_VERSION) {
     throw new Error(
@@ -208,4 +212,45 @@ function migrateToV3(db: DatabaseSync): void {
   addColumnIfMissing(db, "work_items", "failure_reason", "TEXT");
   addColumnIfMissing(db, "work_attempts", "attempt_outcome", "TEXT");
   db.prepare("UPDATE schema_meta SET version = 3 WHERE id = 1").run();
+}
+
+/**
+ * Schema v4: durable monotonic event_seq for authoritative total event order.
+ * event_id remains identity; ts remains observational metadata.
+ */
+function migrateToV4(db: DatabaseSync): void {
+  addColumnIfMissing(db, "events", "event_seq", "INTEGER");
+
+  const missing = db
+    .prepare(
+      `SELECT event_id, ts FROM events
+       WHERE event_seq IS NULL
+       ORDER BY ts ASC, event_id ASC`,
+    )
+    .all() as Array<{ event_id: string; ts: string }>;
+  const maxRow = db
+    .prepare(`SELECT COALESCE(MAX(event_seq), 0) AS m FROM events`)
+    .get() as { m: number };
+  let next = Number(maxRow.m) + 1;
+  const upd = db.prepare(`UPDATE events SET event_seq = ? WHERE event_id = ?`);
+  for (const row of missing) {
+    upd.run(next, row.event_id);
+    next += 1;
+  }
+
+  // Enforce uniqueness for all rows after backfill.
+  const nulls = db
+    .prepare(`SELECT COUNT(*) AS c FROM events WHERE event_seq IS NULL`)
+    .get() as { c: number };
+  if (Number(nulls.c) !== 0) {
+    throw new Error("Failed to backfill event_seq for all events");
+  }
+
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_events_seq ON events(event_seq);
+    CREATE INDEX IF NOT EXISTS idx_events_unflushed_seq
+      ON events(jsonl_flushed, event_seq);
+  `);
+
+  db.prepare("UPDATE schema_meta SET version = 4 WHERE id = 1").run();
 }

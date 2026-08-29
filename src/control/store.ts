@@ -104,6 +104,7 @@ function mapAttempt(row: Record<string, unknown>): AttemptRecord {
 function mapEvent(row: Record<string, unknown>): EventRecord {
   return {
     event_id: String(row.event_id),
+    event_seq: Number(row.event_seq),
     ts: String(row.ts),
     event_type: String(row.event_type) as EventType,
     project_id: row.project_id == null ? null : String(row.project_id),
@@ -111,6 +112,22 @@ function mapEvent(row: Record<string, unknown>): EventRecord {
     payload: JSON.parse(String(row.payload)) as Record<string, unknown>,
     jsonl_flushed: Number(row.jsonl_flushed),
   };
+}
+
+function serializeJson(
+  value: unknown,
+  label: string,
+): string {
+  try {
+    return JSON.stringify(value);
+  } catch (err) {
+    const detail =
+      err instanceof Error ? err.message.slice(0, 400) : String(err).slice(0, 400);
+    throw new ControlError(
+      "RESULT_SERIALIZE",
+      `Cannot serialize ${label}: ${detail}`,
+    );
+  }
 }
 
 export class ControlStore {
@@ -612,7 +629,7 @@ export class ControlStore {
 
   listEvents(): EventRecord[] {
     const rows = this.db
-      .prepare("SELECT * FROM events ORDER BY ts ASC, event_id ASC")
+      .prepare("SELECT * FROM events ORDER BY event_seq ASC")
       .all() as Record<string, unknown>[];
     return rows.map(mapEvent);
   }
@@ -757,6 +774,10 @@ export class ControlStore {
     },
     now: Date = this.clock(),
   ): AttemptRecord {
+    // Serialize before opening the write transaction so a failure leaves no partial finish.
+    const resultJson = serializeJson(args.result, "execution result");
+    const resultPayload = JSON.parse(resultJson) as Record<string, unknown>;
+
     let finished: AttemptRecord | null = null;
     this.withTransaction(() => {
       const work = this.assertActiveLease(
@@ -794,20 +815,21 @@ export class ControlStore {
         .run(
           ts,
           args.executionOk ? 1 : 0,
-          JSON.stringify(args.result),
+          resultJson,
           args.verificationStatus,
           args.verificationDetail,
           outcome,
           args.attemptId,
         );
 
+      // Authoritative order: execution_finished → attempt_finished → verification_*.
       this.insertEvent("work.execution_finished", {
         project_id: work.project_id,
         work_id: args.workId,
         payload: {
           attempt_id: args.attemptId,
           execution_ok: args.executionOk,
-          result: args.result,
+          result: resultPayload,
           attempt_outcome: outcome,
         },
         ts,
@@ -872,13 +894,23 @@ export class ControlStore {
       leaseToken: string;
       workerId: string;
       attemptId: string;
-      outcome: "SETUP_ERROR" | "EXEC_ERROR" | "VERIFY_ERROR";
+      outcome: "SETUP_ERROR" | "EXEC_ERROR" | "VERIFY_ERROR" | "RESULT_ERROR";
       executionOk: boolean | null;
       result: Record<string, unknown> | null;
       detail: string;
     },
     now: Date = this.clock(),
   ): AttemptRecord {
+    // Prefer omitting a non-serializable result over failing finalization.
+    let resultJson: string | null = null;
+    if (args.result != null) {
+      try {
+        resultJson = serializeJson(args.result, "error result");
+      } catch {
+        resultJson = null;
+      }
+    }
+
     let finished: AttemptRecord | null = null;
     this.withTransaction(() => {
       const work = this.assertActiveLease(
@@ -911,15 +943,18 @@ export class ControlStore {
         .run(
           ts,
           args.executionOk == null ? null : args.executionOk ? 1 : 0,
-          args.result == null ? null : JSON.stringify(args.result),
+          resultJson,
           args.detail.slice(0, 500),
           args.outcome,
           args.attemptId,
         );
 
-      // SETUP_ERROR never claims execution started/finished.
-      // EXEC_ERROR / VERIFY_ERROR: execution was invoked — record finish evidence.
-      if (args.outcome === "EXEC_ERROR" || args.outcome === "VERIFY_ERROR") {
+      // SETUP_ERROR never claims execution. Others: execution was entered.
+      if (
+        args.outcome === "EXEC_ERROR" ||
+        args.outcome === "VERIFY_ERROR" ||
+        args.outcome === "RESULT_ERROR"
+      ) {
         this.insertEvent("work.execution_finished", {
           project_id: work.project_id,
           work_id: args.workId,
@@ -927,7 +962,7 @@ export class ControlStore {
             attempt_id: args.attemptId,
             attempt_outcome: args.outcome,
             execution_ok: args.executionOk,
-            result: args.result,
+            result: resultJson == null ? null : JSON.parse(resultJson),
             detail: args.detail.slice(0, 500),
           },
           ts,
@@ -941,7 +976,7 @@ export class ControlStore {
           attempt_id: args.attemptId,
           attempt_outcome: args.outcome,
           execution_ok: args.executionOk,
-          result: args.result,
+          result: resultJson == null ? null : JSON.parse(resultJson),
           detail: args.detail.slice(0, 500),
         },
         ts,
@@ -1009,6 +1044,7 @@ export class ControlStore {
 
       const ts = now.toISOString();
       const nextCount = work.repair_count + 1;
+      const nextInputJson = serializeJson(args.nextInput, "repair nextInput");
       this.db
         .prepare(
           `UPDATE work_items
@@ -1017,7 +1053,7 @@ export class ControlStore {
                updated_at = ?
            WHERE work_id = ?`,
         )
-        .run(JSON.stringify(args.nextInput), nextCount, ts, args.workId);
+        .run(nextInputJson, nextCount, ts, args.workId);
       this.db
         .prepare(
           `UPDATE work_attempts
@@ -1035,7 +1071,7 @@ export class ControlStore {
           repair_count: nextCount,
           max_repairs: work.max_repairs,
           note: args.note,
-          task_input: args.nextInput,
+          task_input: JSON.parse(nextInputJson) as Record<string, unknown>,
         },
         ts,
       });
@@ -1083,7 +1119,7 @@ export class ControlStore {
         .prepare(
           `SELECT * FROM events
            WHERE jsonl_flushed = 0
-           ORDER BY ts ASC, event_id ASC`,
+           ORDER BY event_seq ASC`,
         )
         .all() as Record<string, unknown>[];
 
@@ -1093,6 +1129,7 @@ export class ControlStore {
         if (!existingIds.has(event.event_id)) {
           const line = JSON.stringify({
             event_id: event.event_id,
+            event_seq: event.event_seq,
             ts: event.ts,
             event_type: event.event_type,
             project_id: event.project_id,
@@ -1121,19 +1158,25 @@ export class ControlStore {
     },
   ): void {
     const eventId = newId("evt");
+    const payloadJson = serializeJson(args.payload, `event payload (${eventType})`);
+    const maxRow = this.db
+      .prepare(`SELECT COALESCE(MAX(event_seq), 0) AS m FROM events`)
+      .get() as { m: number };
+    const eventSeq = Number(maxRow.m) + 1;
     this.db
       .prepare(
         `INSERT INTO events (
-           event_id, ts, event_type, project_id, work_id, payload, jsonl_flushed
-         ) VALUES (?, ?, ?, ?, ?, ?, 0)`,
+           event_id, event_seq, ts, event_type, project_id, work_id, payload, jsonl_flushed
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
       )
       .run(
         eventId,
+        eventSeq,
         args.ts,
         eventType,
         args.project_id,
         args.work_id,
-        JSON.stringify(args.payload),
+        payloadJson,
       );
   }
 }

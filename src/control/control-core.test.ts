@@ -23,18 +23,50 @@ function tempState(): string {
 }
 
 function cleanup(dir: string): void {
-  // Windows may briefly hold SQLite WAL handles after close.
-  let last: unknown;
-  for (let i = 0; i < 8; i += 1) {
+  for (let i = 0; i < 12; i += 1) {
     try {
       rmSync(dir, { recursive: true, force: true });
       return;
-    } catch (err) {
-      last = err;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (i + 1));
+    } catch {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40 * (i + 1));
     }
   }
-  throw last;
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // Best-effort on Windows SQLite locks.
+  }
+}
+
+function insertUnflushedEvent(
+  store: ControlStore,
+  args: {
+    eventId: string;
+    ts: string;
+    eventType: string;
+    projectId: string;
+    workId: string;
+    payload: Record<string, unknown>;
+  },
+): void {
+  const maxRow = store.db
+    .prepare(`SELECT COALESCE(MAX(event_seq), 0) AS m FROM events`)
+    .get() as { m: number };
+  store.db
+    .prepare(
+      `INSERT INTO events (
+         event_id, event_seq, ts, event_type, project_id, work_id, payload, jsonl_flushed
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+    )
+    .run(
+      args.eventId,
+      Number(maxRow.m) + 1,
+      args.ts,
+      args.eventType,
+      args.projectId,
+      args.workId,
+      JSON.stringify(args.payload),
+    );
 }
 
 /** WP-002 completion gate: mark a finished PASS attempt under the active lease. */
@@ -66,13 +98,13 @@ test("sqlite init: WAL, schema version, idempotent reopen", () => {
   try {
     const a = ControlStore.open({ stateDir: dir });
     assert.equal(a.walEnabled(), true);
-    assert.equal(a.schemaVersion(), 3);
+    assert.equal(a.schemaVersion(), 4);
     assert.equal(existsSync(dbPath(dir)), true);
     a.close();
 
     const b = ControlStore.open({ stateDir: dir });
     assert.equal(b.walEnabled(), true);
-    assert.equal(b.schemaVersion(), 3);
+    assert.equal(b.schemaVersion(), 4);
     b.close();
   } finally {
     cleanup(dir);
@@ -266,20 +298,14 @@ test("events: sqlite + jsonl; restart flush without duplication", () => {
 
     // Simulate crash gap: SQLite has unflushed event, JSONL missing it.
     const pendingId = "evt_pending_gap_test";
-    store.db
-      .prepare(
-        `INSERT INTO events (
-           event_id, ts, event_type, project_id, work_id, payload, jsonl_flushed
-         ) VALUES (?, ?, ?, ?, ?, ?, 0)`,
-      )
-      .run(
-        pendingId,
-        "2026-01-01T00:00:09.000Z",
-        "work.created",
-        project.project_id,
-        work.work_id,
-        JSON.stringify({ synthetic: true }),
-      );
+    insertUnflushedEvent(store, {
+      eventId: pendingId,
+      ts: "2026-01-01T00:00:09.000Z",
+      eventType: "work.created",
+      projectId: project.project_id,
+      workId: work.work_id,
+      payload: { synthetic: true },
+    });
     store.close();
 
     const before = readFileSync(eventsJsonlPath(dir), "utf8")
@@ -345,20 +371,14 @@ test("WP001-IR-001 Case A: concurrent flush of one pending event yields one JSON
     const project = store.createProject("demo");
     const work = store.createWork(project.project_id, "task");
     const pendingId = "evt_single_crash_gap";
-    store.db
-      .prepare(
-        `INSERT INTO events (
-           event_id, ts, event_type, project_id, work_id, payload, jsonl_flushed
-         ) VALUES (?, ?, ?, ?, ?, ?, 0)`,
-      )
-      .run(
-        pendingId,
-        "2026-01-01T00:00:10.000Z",
-        "work.created",
-        project.project_id,
-        work.work_id,
-        JSON.stringify({ concurrent: true }),
-      );
+    insertUnflushedEvent(store, {
+      eventId: pendingId,
+      ts: "2026-01-01T00:00:10.000Z",
+      eventType: "work.created",
+      projectId: project.project_id,
+      workId: work.work_id,
+      payload: { concurrent: true },
+    });
     store.close();
 
     const workers = 8;
@@ -394,20 +414,14 @@ test("WP001-IR-001 Case B: concurrent flush under many pending events has no dup
     for (let i = 0; i < pendingCount; i += 1) {
       const id = `evt_multi_${String(i).padStart(4, "0")}`;
       pendingIds.push(id);
-      store.db
-        .prepare(
-          `INSERT INTO events (
-             event_id, ts, event_type, project_id, work_id, payload, jsonl_flushed
-           ) VALUES (?, ?, ?, ?, ?, ?, 0)`,
-        )
-        .run(
-          id,
-          "2026-01-01T00:02:00.000Z",
-          "work.created",
-          project.project_id,
-          work.work_id,
-          JSON.stringify({ i }),
-        );
+      insertUnflushedEvent(store, {
+        eventId: id,
+        ts: "2026-01-01T00:02:00.000Z",
+        eventType: "work.created",
+        projectId: project.project_id,
+        workId: work.work_id,
+        payload: { i },
+      });
     }
     store.close();
 
