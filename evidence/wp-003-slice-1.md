@@ -17,7 +17,7 @@ Recorded: 2026-08-29
 | **INDEPENDENT REVIEW TARGET SHA (R0)** | `992a4d286586bc1eab0776fcc96e2ea79c0f1346` | Slice 1 R0 HEAD reviewed under OWATA-REQ-0023 (REWORK) |
 | **IMPLEMENTATION SHA (R1)** | `56934e838e8b2aa7b031c4bd20134d29b2c236c5` | Slice 1 R1 rework resolving the four confirmed findings |
 | **INDEPENDENT REVIEW TARGET SHA (R1)** | `a3be07aabe442c803e89b94ae7639113913bf103` | R1 review HEAD (evidence-only after R1 implementation); OWATA-REQ-0025 disposition **REWORK** |
-| **IMPLEMENTATION SHA (R2)** | *(recorded after R2 land — see follow-up evidence commit if needed)* | Slice 1 R2: F01 policy provenance + F02 PC semantic RETRY |
+| **IMPLEMENTATION SHA (R2)** | `00694824e0186ebf8cd0939901227c1cc46014a0` | Slice 1 R2: F01 policy provenance + F02 PC semantic RETRY + killed-child fence regression |
 
 Any later evidence-only follow-up that only fills this table is **not** the implementation SHA.
 
