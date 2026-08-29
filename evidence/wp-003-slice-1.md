@@ -231,13 +231,13 @@ $ git diff --check 5414686a7864749655d54318efbfab0028d832b4..HEAD
 exit 0
 ```
 
-R3 regressions cover F01 forged request envelope roles, F02 accepted-target / no-evidence rejection, and F03 Human Gate recovery retention through reopen ↁEHuman RETRY ↁEPC RETRY. Prior suites remain green.
+R3 regressions cover F01 forged request envelope roles, F02 accepted-target / no-evidence rejection, and F03 Human Gate recovery retention through reopen → Human RETRY → PC RETRY. Prior suites remain green.
 
-## Slice 1 R4  EOWATA-REQ-0030-F01 recovery lineage provenance
+## Slice 1 R4 — OWATA-REQ-0030-F01 recovery lineage provenance
 
 Baseline / prior review HEAD: `26add9c2f718281fa3e07512e9274d9d6d3d88df`.
 
-### OWATA-REQ-0030-F01  ERESOLVED
+### OWATA-REQ-0030-F01 — RESOLVED
 
 Semantic RETRY now requires an explicit durable **recovery lineage**:
 
@@ -245,7 +245,7 @@ Semantic RETRY now requires an explicit durable **recovery lineage**:
 - `enterRecovery()` creates a new lineage id, binds `recovery_target_request_id`, sets `recovery_reason`, and appends authoritative `cycle.recovery_required` with the same identity fields
 - `assertRetryableRecoveryTarget()` requires active lineage id, matching durable lineage event (`cycle_id` / `recovery_lineage_id` / `request_id` / `reason`), no ACCEPTED result, and failure evidence compatible with the current lineage
 - Historical failure evidence for request A cannot authorize RETRY while the current lineage identifies request B (stale-lineage regression)
-- Human Gate preserves both `recovery_target_request_id` and `recovery_lineage_id` through reopen ↁEHuman RETRY ↁEPC RETRY
+- Human Gate preserves both `recovery_target_request_id` and `recovery_lineage_id` through reopen → Human RETRY → PC RETRY
 - ACCEPT / ABORT / REDESIGN / successful semantic RETRY clear target + lineage together
 - Later genuine recovery supersedes the prior lineage id
 
@@ -253,16 +253,16 @@ Semantic RETRY now requires an explicit durable **recovery lineage**:
 
 ```text
 Builder/Reviewer failure
-ↁEenterRecovery(requestId=A)  # new recovery_lineage_id = L-A
-ↁERECOVERY_REQUIRED (target=A, lineage=L-A)
-ↁEPC ADJUDICATE (lineage preserved)
-ↁEoptional HUMAN_GATE (lineage preserved; reopen-safe)
-ↁEoptional Human RETRY ↁEAWAITING_PC (lineage preserved)
-ↁEPC Decision RETRY
-ↁEassertRetryableRecoveryTarget (lineage event + failure evidence)
-ↁEnew Control Request B (retry_of_request_id=A, authorized_by_decision_id=RETRY Decision)
-ↁEclear recovery_target + recovery_lineage
-ↁEBuilder/Reviewer proceeds with fresh dispatch budget
+→ enterRecovery(requestId=A)  # new recovery_lineage_id = L-A
+→ RECOVERY_REQUIRED (target=A, lineage=L-A)
+→ PC ADJUDICATE (lineage preserved)
+→ optional HUMAN_GATE (lineage preserved; reopen-safe)
+→ optional Human RETRY → AWAITING_PC (lineage preserved)
+→ PC Decision RETRY
+→ assertRetryableRecoveryTarget (lineage event + failure evidence)
+→ new Control Request B (retry_of_request_id=A, authorized_by_decision_id=RETRY Decision)
+→ clear recovery_target + recovery_lineage
+→ Builder/Reviewer proceeds with fresh dispatch budget
 ```
 
 ### Validation (R4)
