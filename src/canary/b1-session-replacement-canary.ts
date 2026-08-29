@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -17,6 +18,7 @@ import type { PcDecisionBody } from "../control/protocol.js";
 import {
   CursorCliBinding,
   GatewayBuilderAdapter,
+  assertNonClaudeModel,
   compileBuilderInstruction,
   createAttemptWorktree,
   ensureExecutionDir,
@@ -34,7 +36,21 @@ function initTaskRepo(repoPath: string): string {
   git(["config", "user.email", "canary@owata.local"], repoPath);
   git(["config", "user.name", "OWATA Canary"], repoPath);
   writeFileSync(join(repoPath, "README.md"), "TODO: set STATUS=READY\n", "utf8");
-  git(["add", "README.md"], repoPath);
+  writeFileSync(
+    join(repoPath, "CANARY_TASK.md"),
+    [
+      "# Canary task",
+      "",
+      "1. Edit README.md so it contains exactly one content line: STATUS=READY",
+      "2. git add README.md",
+      "3. git commit -m \"canary: set STATUS=READY\"",
+      "4. Write the canonical builder_result envelope JSON to the path named in the builder instruction (result_envelope_path).",
+      "5. Set body.candidate_sha to the commit SHA from git rev-parse HEAD.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  git(["add", "README.md", "CANARY_TASK.md"], repoPath);
   git(["commit", "-m", "init"], repoPath);
   return git(["rev-parse", "HEAD"], repoPath);
 }
@@ -83,7 +99,24 @@ async function main(): Promise<number> {
 
   let modelId: string;
   try {
-    modelId = await binding.discoverNonClaudeModel();
+    const discovered = await binding.discoverNonClaudeModel();
+    const catalog = await binding.listNonClaudeModels();
+    // Sol can be listed while the account is spend-limited for API models.
+    // Prefer an explicit Composer id when Sol is the catalog preference.
+    if (
+      /gpt-5\.6.*sol/i.test(discovered) &&
+      catalog.includes("composer-2.5")
+    ) {
+      modelId = "composer-2.5";
+    } else if (
+      /gpt-5\.6.*sol/i.test(discovered) &&
+      catalog.includes("composer-2.5-fast")
+    ) {
+      modelId = "composer-2.5-fast";
+    } else {
+      modelId = discovered;
+    }
+    assertNonClaudeModel(modelId);
   } catch (err) {
     console.log(
       JSON.stringify({
@@ -99,6 +132,9 @@ async function main(): Promise<number> {
   const stateDir = join(root, "state");
   const repoPath = join(root, "repo");
   const worktreesRoot = join(root, "worktrees");
+  mkdirSync(repoPath, { recursive: true });
+  mkdirSync(worktreesRoot, { recursive: true });
+  mkdirSync(stateDir, { recursive: true });
 
   try {
     const baseSha = initTaskRepo(repoPath);
@@ -344,6 +380,7 @@ main()
       JSON.stringify({
         status: "FAILED",
         message: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : null,
       }),
     );
     process.exitCode = 1;

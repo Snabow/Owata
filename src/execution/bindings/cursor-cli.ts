@@ -18,7 +18,26 @@ import type {
 
 const execFileAsync = promisify(execFile);
 
-const PREFERRED_MODEL = /gpt-5\.6.*sol/i;
+const PREFERRED_MODELS = [
+  /^gpt-5\.6-sol-high$/,
+  /^gpt-5\.6-sol-medium$/,
+  /^gpt-5\.6-sol/,
+  /^composer-2\.5$/,
+  /^composer-2\.5-fast$/,
+  /^cursor-grok-4\.6-high-fast$/,
+  /^cursor-grok-4\.6-high$/,
+  /^gpt-5\.3-codex$/,
+  /^gemini-3\.7-flash-high$/,
+];
+
+function pickPreferredNonClaude(models: string[]): string | undefined {
+  const usable = models.filter((id) => !isClaudeFamily(id) && !isAutoRouter(id));
+  for (const re of PREFERRED_MODELS) {
+    const hit = usable.find((id) => re.test(id));
+    if (hit) return hit;
+  }
+  return usable[0];
+}
 
 interface CursorCliHandle extends ExecutionStartHandle {
   process: ChildProcess;
@@ -183,25 +202,21 @@ export class CursorCliBinding implements ExecutionBinding {
     };
   }
 
-  async discoverNonClaudeModel(): Promise<string> {
+  async listNonClaudeModels(): Promise<string[]> {
     let output = "";
     try {
       output = (await runAgent(["--list-models"], 30_000)).stdout;
     } catch {
-      try {
-        output = (await runAgent(["models"], 30_000)).stdout;
-      } catch (err) {
-        throw new Error(
-          `NON_CLAUDE_BINDING_UNAVAILABLE: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
+      output = (await runAgent(["models"], 30_000)).stdout;
     }
-
-    const models = parseModelIds(output).filter(
+    return parseModelIds(output).filter(
       (id) => !isClaudeFamily(id) && !isAutoRouter(id),
     );
-    const preferred = models.find((id) => PREFERRED_MODEL.test(id));
-    const chosen = preferred ?? models[0];
+  }
+
+  async discoverNonClaudeModel(): Promise<string> {
+    const models = await this.listNonClaudeModels();
+    const chosen = pickPreferredNonClaude(models);
     if (!chosen) {
       throw new Error("NON_CLAUDE_BINDING_UNAVAILABLE: no non-Claude models exposed");
     }
@@ -215,8 +230,9 @@ export class CursorCliBinding implements ExecutionBinding {
     const prompt = [
       `Read the builder instruction file at: ${attempt.instructionPath}`,
       `Follow it exactly.`,
+      `If CANARY_TASK.md exists in the workspace root, execute it verbatim.`,
       `Write the canonical builder_result JSON envelope to: ${attempt.resultEnvelopePath}`,
-      `Use the repository workspace only.`,
+      `Use only this workspace. Do not use --resume or --continue.`,
     ].join("\n");
 
     const args = [

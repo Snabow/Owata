@@ -63,7 +63,8 @@ export function compileBuilderInstruction(
     "## Runtime Obligations",
     `- Write a canonical builder_result envelope JSON to: ${args.resultEnvelopeRelPath}`,
     "- Commit repository changes in the active worktree when producing CANDIDATE_READY.",
-    "- Include resolvable candidate_sha when status is CANDIDATE_READY.",
+    "- Include resolvable candidate_sha (git rev-parse HEAD after commit) when status is CANDIDATE_READY.",
+    "- If CANARY_TASK.md exists at the worktree root, execute that file verbatim as the bounded task; do not expand scope beyond it and the envelope obligation.",
   ].join("\n");
 
   const promptHash = createHash("sha256").update(text, "utf8").digest("hex");
