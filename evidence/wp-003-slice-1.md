@@ -22,8 +22,9 @@ Recorded: 2026-08-29
 | **IMPLEMENTATION SHA (R3)** | `6c867ce46db4a3bf4bca922904722c2ae00e875e` | Slice 1 R3: complete PC request authority + failed-target proof + Human Gate recovery retention |
 | **INDEPENDENT REVIEW TARGET SHA (R3)** | `26add9c2f718281fa3e07512e9274d9d6d3d88df` | R3 review HEAD; OWATA-REQ-0030 disposition **REWORK** (F01 recovery lineage provenance) |
 | **IMPLEMENTATION SHA (R4)** | `2a8373b99e32fd0a7b82014c57e256ae4431cebc` | Slice 1 R4: explicit recovery_lineage_id binding + stale-lineage rejection |
+| **INDEPENDENT REVIEW TARGET SHA (R4) / MERGED MAIN** | `0408ecf986aa5e0719c7fa240cf2d0812154d38d` | R4 review tip; OWATA-REQ-0034 **PASS / READY**; Human-approved fast-forward to `main` |
 
-Any later evidence-only follow-up that only fills this table is **not** the implementation SHA.
+Any later evidence-only follow-up that only fills this table is **not** the implementation SHA. R4 implementation SHA ≠ evidence/review tip SHA.
 
 ## Slice 1 R1 — Independent Review finding resolutions (OWATA-REQ-0024)
 
@@ -148,18 +149,19 @@ Distinct from automatic dispatch retry (same `request_id`, new attempt/fence).
 
 ## Schema v5
 
-Exact migration chain remains `1→2→3→4→5` (no version bump for R2/R3).
+Exact migration chain remains `1→2→3→4→5` (no version bump for R2/R3/R4).
 
 Fresh databases migrate through the chain to v5. Real v4 rows survive. Additive columns on open / migrateToV5:
 
 - `cycles.policy_authorized_by_decision_id`
 - `cycles.recovery_target_request_id`
+- `cycles.recovery_lineage_id`
 
 Unknown version 0 and future versions still fail explicitly.
 
 Tables:
 
-- `cycles` — identity, Work Package ref, semantic state, candidate SHAs, durable transition policy + PC provenance, recovery target, retry budget
+- `cycles` — identity, Work Package ref, semantic state, candidate SHAs, durable transition policy + PC provenance, recovery target, recovery lineage, retry budget
 - `envelopes` — append-only canonical `owata.handoff/1` envelopes (Control Request may carry `retry_of_request_id`)
 - `dispatches` — request-scoped attempt / fence / lease ownership (PC, Builder, Reviewer)
 - `human_gates` — durable Human Gate + response
@@ -282,6 +284,27 @@ exit 0
 $ git diff --check 26add9c2f718281fa3e07512e9274d9d6d3d88df..HEAD
 exit 0
 ```
+
+## Slice 1 Final Independent Review — OWATA-REQ-0034
+
+| Field | Value |
+| --- | --- |
+| REVIEW_TARGET | `0408ecf986aa5e0719c7fa240cf2d0812154d38d` |
+| IMPLEMENTATION_SHA | `2a8373b99e32fd0a7b82014c57e256ae4431cebc` |
+| DISPOSITION | **PASS / READY** |
+| TESTS | 91 / 91 PASS |
+| NEW_FINDINGS | none |
+| CLAUDE_USED | NO |
+| Human Gate (OWATA-REQ-0035) | APPROVE fast-forward `main` → reviewed tip |
+| Authoritative `main` | `0408ecf986aa5e0719c7fa240cf2d0812154d38d` |
+
+Notes:
+
+- R4 implementation SHA ≠ evidence/review tip SHA (evidence-only follow-ups + UTF-8 repair after implementation land)
+- Exact independently reviewed tip is now `main`
+- No implementation source changes occurred after the independently reviewed tip before merge
+- **Slice 1 is ACCEPTED**
+- **WP-003 remains open** (real adapters / Human Clipboard Zero / B1 graduation not yet)
 
 ## Provider integration
 
