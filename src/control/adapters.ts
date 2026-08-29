@@ -34,6 +34,7 @@ export interface CycleSnapshot {
   policy: CyclePolicy;
   policy_authorized_by_decision_id: string | null;
   recovery_target_request_id: string | null;
+  recovery_lineage_id: string | null;
   recovery_reason: string | null;
 }
 

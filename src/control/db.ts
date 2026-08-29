@@ -181,6 +181,7 @@ function migrate(db: DatabaseSync, stateDir: string): void {
   if (version === SCHEMA_VERSION) {
     addColumnIfMissing(db, "cycles", "policy_authorized_by_decision_id", "TEXT");
     addColumnIfMissing(db, "cycles", "recovery_target_request_id", "TEXT");
+    addColumnIfMissing(db, "cycles", "recovery_lineage_id", "TEXT");
   }
 
   // Crash recovery / prior incomplete projection rebuild: converge from SQLite.
@@ -294,6 +295,7 @@ function migrateToV5(db: DatabaseSync): void {
       policy_json TEXT NOT NULL,
       policy_authorized_by_decision_id TEXT,
       recovery_target_request_id TEXT,
+      recovery_lineage_id TEXT,
       max_dispatch_retries INTEGER NOT NULL DEFAULT 3,
       recovery_reason TEXT,
       created_at TEXT NOT NULL,
@@ -355,6 +357,7 @@ function migrateToV5(db: DatabaseSync): void {
 
   addColumnIfMissing(db, "cycles", "policy_authorized_by_decision_id", "TEXT");
   addColumnIfMissing(db, "cycles", "recovery_target_request_id", "TEXT");
+  addColumnIfMissing(db, "cycles", "recovery_lineage_id", "TEXT");
   db.prepare("UPDATE schema_meta SET version = 5 WHERE id = 1").run();
 }
 

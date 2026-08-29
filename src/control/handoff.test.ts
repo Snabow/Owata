@@ -2325,3 +2325,525 @@ test("R3 F03: Human Gate preserves recovery target through Human RETRY to PC RET
     cleanup(dir);
   }
 });
+
+function persistBuilderRequest(
+  handoff: HandoffStore,
+  store: ControlStore,
+  cycleId: string,
+  requestId: string,
+  envelopeId: string,
+): void {
+  handoff.persistEnvelope({
+    protocol: PROTOCOL_V1,
+    envelope_id: envelopeId,
+    kind: "control_request",
+    cycle_id: cycleId,
+    request_id: requestId,
+    from_role: "program_control",
+    to_role: "builder",
+    created_at: store.now().toISOString(),
+    body: {
+      action: "BUILD",
+      target_role: "builder",
+      work_package_ref: "WP-003",
+      base_sha: null,
+      target_sha: null,
+      authoritative_references: ["work-packages/WP-003"],
+      required_capabilities: ["repository_read"],
+      expected_result_kind: "builder_result",
+      stop_condition: null,
+      authorized_by_decision_id: null,
+      authorized_finding_ids: [],
+      retry_of_request_id: null,
+    },
+  });
+}
+
+test("R4 F01: stale historical A cannot authorize current lineage B (OWATA-REQ-0030-F01)", () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock } = openHarness(dir);
+    const project = store.createProject("r4-stale");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-003",
+    });
+    const requestA = "req_failed_old_lineage_A";
+    const requestB = "req_failed_current_lineage_B";
+    persistBuilderRequest(handoff, store, cycle.cycle_id, requestA, "env_request_A");
+    persistBuilderRequest(handoff, store, cycle.cycle_id, requestB, "env_request_B");
+
+    const failOnce = (requestId: string) => {
+      handoff.transition(cycle.cycle_id, "DISPATCHING_BUILD", {
+        current_request_id: requestId,
+      });
+      const dispatch = handoff.claimDispatch({
+        cycleId: cycle.cycle_id,
+        requestId,
+        targetRole: "builder",
+        owner: "probe",
+        leaseMs: 60_000,
+      });
+      handoff.rejectResult({
+        dispatchId: dispatch.dispatch_id,
+        fenceToken: dispatch.fence_token,
+        failureClass: "RUNTIME_ERROR",
+        detail: `failed ${requestId}`,
+      });
+    };
+
+    failOnce(requestA);
+    handoff.enterRecovery({
+      cycleId: cycle.cycle_id,
+      requestId: requestA,
+      reason: "historical_A",
+    });
+    const lineageA = handoff.requireCycle(cycle.cycle_id).recovery_lineage_id;
+    assert.ok(lineageA);
+
+    failOnce(requestB);
+    handoff.enterRecovery({
+      cycleId: cycle.cycle_id,
+      requestId: requestB,
+      reason: "current-lineage-B",
+    });
+    const liveB = handoff.requireCycle(cycle.cycle_id);
+    assert.equal(liveB.recovery_target_request_id, requestB);
+    assert.ok(liveB.recovery_lineage_id);
+    assert.notEqual(liveB.recovery_lineage_id, lineageA);
+
+    // Adversarial: point target at historical A while lineage evidence still identifies B.
+    store.db
+      .prepare("UPDATE cycles SET recovery_target_request_id = ? WHERE cycle_id = ?")
+      .run(requestA, cycle.cycle_id);
+
+    const beforeEnvs = handoff.listEnvelopes(cycle.cycle_id).length;
+    const dispatcher = new Dispatcher(
+      handoff,
+      {
+        programControl: new FakeProgramControlAdapter(
+          [pcDecision({ decision: "RETRY", rationale: "probe stale lineage" })],
+          envClock,
+        ),
+        builder: new FakeBuilderAdapter([], envClock),
+        reviewer: new FakeReviewerAdapter([], envClock),
+      },
+      { owner: "probe-dispatcher", leaseMs: 60_000 },
+    );
+    const result = dispatcher.step(cycle.cycle_id);
+    assert.equal(result.action, "result_invalid");
+    const after = handoff.requireCycle(cycle.cycle_id);
+    assert.notEqual(after.state, "DISPATCHING_BUILD");
+    assert.equal(
+      handoff.listEnvelopes(cycle.cycle_id).filter((e) => {
+        const b = e.body as { retry_of_request_id?: string | null };
+        return e.kind === "control_request" && b.retry_of_request_id === requestA;
+      }).length,
+      0,
+    );
+    assert.ok(handoff.listEnvelopes(cycle.cycle_id).length >= beforeEnvs);
+    store.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("R4 F01: matching current lineage allows PC semantic RETRY", () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock } = openHarness(dir);
+    const project = store.createProject("r4-ok");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-003",
+    });
+    const requestB = "req_current_B";
+    persistBuilderRequest(handoff, store, cycle.cycle_id, requestB, "env_B");
+    handoff.transition(cycle.cycle_id, "DISPATCHING_BUILD", {
+      current_request_id: requestB,
+    });
+    const dispatch = handoff.claimDispatch({
+      cycleId: cycle.cycle_id,
+      requestId: requestB,
+      targetRole: "builder",
+      owner: "probe",
+      leaseMs: 60_000,
+    });
+    handoff.rejectResult({
+      dispatchId: dispatch.dispatch_id,
+      fenceToken: dispatch.fence_token,
+      failureClass: "RUNTIME_ERROR",
+      detail: "failed B",
+    });
+    handoff.enterRecovery({
+      cycleId: cycle.cycle_id,
+      requestId: requestB,
+      reason: "current-lineage-B",
+    });
+    const lineage = handoff.requireCycle(cycle.cycle_id).recovery_lineage_id;
+    assert.ok(lineage);
+
+    const dispatcher = new Dispatcher(
+      handoff,
+      {
+        programControl: new FakeProgramControlAdapter(
+          [pcDecision({ decision: "RETRY" })],
+          envClock,
+        ),
+        builder: new FakeBuilderAdapter(
+          [{ status: "CANDIDATE_READY", candidate_sha: "sha-r4" }],
+          envClock,
+        ),
+        reviewer: new FakeReviewerAdapter([], envClock),
+      },
+      { owner: "d", leaseMs: 5000 },
+    );
+    const result = dispatcher.step(cycle.cycle_id);
+    assert.equal(result.action, "pc_decision");
+    const live = handoff.requireCycle(cycle.cycle_id);
+    assert.equal(live.state, "DISPATCHING_BUILD");
+    assert.equal(live.recovery_lineage_id, null);
+    assert.equal(live.recovery_target_request_id, null);
+    const body = handoff
+      .listEnvelopes(cycle.cycle_id)
+      .find((e) => e.request_id === live.current_request_id)!.body as {
+      retry_of_request_id: string;
+      authorized_by_decision_id: string;
+    };
+    assert.equal(body.retry_of_request_id, requestB);
+    assert.ok(body.authorized_by_decision_id);
+    store.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("R4 F01: mismatched lineage id / request / reason reject", () => {
+  const dir = tempState();
+  try {
+    const { store, handoff } = openHarness(dir);
+    const project = store.createProject("r4-mismatch");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-003",
+    });
+    const requestB = "req_mismatch_B";
+    persistBuilderRequest(handoff, store, cycle.cycle_id, requestB, "env_mm");
+    handoff.transition(cycle.cycle_id, "DISPATCHING_BUILD", {
+      current_request_id: requestB,
+    });
+    const dispatch = handoff.claimDispatch({
+      cycleId: cycle.cycle_id,
+      requestId: requestB,
+      targetRole: "builder",
+      owner: "probe",
+      leaseMs: 60_000,
+    });
+    handoff.rejectResult({
+      dispatchId: dispatch.dispatch_id,
+      fenceToken: dispatch.fence_token,
+      failureClass: "RUNTIME_ERROR",
+      detail: "failed",
+    });
+    handoff.enterRecovery({
+      cycleId: cycle.cycle_id,
+      requestId: requestB,
+      reason: "lineage-B",
+    });
+    const live = handoff.requireCycle(cycle.cycle_id);
+    assert.ok(live.recovery_lineage_id);
+
+    store.db
+      .prepare("UPDATE cycles SET recovery_lineage_id = ? WHERE cycle_id = ?")
+      .run("rline_forged", cycle.cycle_id);
+    assert.throws(
+      () =>
+        handoff.assertRetryableRecoveryTarget(
+          handoff.requireCycle(cycle.cycle_id),
+          requestB,
+        ),
+      (err: unknown) => err instanceof ControlError && err.code === "PROTOCOL",
+    );
+
+    store.db
+      .prepare(
+        "UPDATE cycles SET recovery_lineage_id = ?, recovery_reason = ? WHERE cycle_id = ?",
+      )
+      .run(live.recovery_lineage_id, "tampered_reason", cycle.cycle_id);
+    assert.throws(
+      () =>
+        handoff.assertRetryableRecoveryTarget(
+          handoff.requireCycle(cycle.cycle_id),
+          requestB,
+        ),
+      (err: unknown) => err instanceof ControlError && err.code === "PROTOCOL",
+    );
+
+    store.db
+      .prepare(
+        "UPDATE cycles SET recovery_reason = ?, recovery_target_request_id = ? WHERE cycle_id = ?",
+      )
+      .run("lineage-B", "req_other", cycle.cycle_id);
+    persistBuilderRequest(handoff, store, cycle.cycle_id, "req_other", "env_other");
+    assert.throws(
+      () =>
+        handoff.assertRetryableRecoveryTarget(
+          handoff.requireCycle(cycle.cycle_id),
+          "req_other",
+        ),
+      (err: unknown) => err instanceof ControlError && err.code === "PROTOCOL",
+    );
+    store.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("R4 F01: historical evidence without current lineage rejects", () => {
+  const dir = tempState();
+  try {
+    const { store, handoff } = openHarness(dir);
+    const project = store.createProject("r4-nolineage");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-003",
+    });
+    const requestA = "req_hist_only";
+    persistBuilderRequest(handoff, store, cycle.cycle_id, requestA, "env_hist");
+    handoff.transition(cycle.cycle_id, "DISPATCHING_BUILD", {
+      current_request_id: requestA,
+    });
+    const dispatch = handoff.claimDispatch({
+      cycleId: cycle.cycle_id,
+      requestId: requestA,
+      targetRole: "builder",
+      owner: "probe",
+      leaseMs: 60_000,
+    });
+    handoff.rejectResult({
+      dispatchId: dispatch.dispatch_id,
+      fenceToken: dispatch.fence_token,
+      failureClass: "RUNTIME_ERROR",
+      detail: "failed",
+    });
+    handoff.transition(cycle.cycle_id, "RECOVERY_REQUIRED", {
+      recovery_reason: "forged_without_lineage",
+      recovery_target_request_id: requestA,
+    });
+    assert.equal(handoff.requireCycle(cycle.cycle_id).recovery_lineage_id, null);
+    assert.throws(
+      () =>
+        handoff.assertRetryableRecoveryTarget(
+          handoff.requireCycle(cycle.cycle_id),
+          requestA,
+        ),
+      (err: unknown) => err instanceof ControlError && err.code === "PROTOCOL",
+    );
+    store.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("R4 F01: later recovery supersedes old lineage; reopen preserves current", () => {
+  const dir = tempState();
+  try {
+    const { store, handoff } = openHarness(dir);
+    const project = store.createProject("r4-super");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-003",
+    });
+    const requestA = "req_old";
+    const requestB = "req_new";
+    persistBuilderRequest(handoff, store, cycle.cycle_id, requestA, "env_old");
+    persistBuilderRequest(handoff, store, cycle.cycle_id, requestB, "env_new");
+    for (const requestId of [requestA, requestB]) {
+      handoff.transition(cycle.cycle_id, "DISPATCHING_BUILD", {
+        current_request_id: requestId,
+      });
+      const dispatch = handoff.claimDispatch({
+        cycleId: cycle.cycle_id,
+        requestId,
+        targetRole: "builder",
+        owner: "probe",
+        leaseMs: 60_000,
+      });
+      handoff.rejectResult({
+        dispatchId: dispatch.dispatch_id,
+        fenceToken: dispatch.fence_token,
+        failureClass: "RUNTIME_ERROR",
+        detail: `failed ${requestId}`,
+      });
+    }
+    handoff.enterRecovery({
+      cycleId: cycle.cycle_id,
+      requestId: requestA,
+      reason: "old",
+    });
+    const oldLineage = handoff.requireCycle(cycle.cycle_id).recovery_lineage_id!;
+    handoff.enterRecovery({
+      cycleId: cycle.cycle_id,
+      requestId: requestB,
+      reason: "new",
+    });
+    const current = handoff.requireCycle(cycle.cycle_id);
+    assert.equal(current.recovery_target_request_id, requestB);
+    assert.notEqual(current.recovery_lineage_id, oldLineage);
+    const lineageId = current.recovery_lineage_id!;
+
+    store.close();
+    const again = ControlStore.open({ stateDir: dir });
+    const h2 = new HandoffStore(again);
+    const reopened = h2.requireCycle(cycle.cycle_id);
+    assert.equal(reopened.recovery_lineage_id, lineageId);
+    assert.equal(reopened.recovery_target_request_id, requestB);
+    h2.assertRetryableRecoveryTarget(reopened, requestB);
+    again.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("R4 F01: Human Gate preserves recovery_lineage_id through reopen and Human RETRY", () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock, clock } = openHarness(dir);
+    const project = store.createProject("r4-gate");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-003",
+      maxDispatchRetries: 1,
+    });
+    let failOnce = true;
+    const builder = new FakeBuilderAdapter(
+      [{ status: "CANDIDATE_READY", candidate_sha: "sha-r4-gate" }],
+      envClock,
+    );
+    builder.build = (input) => {
+      if (failOnce) {
+        failOnce = false;
+        builder.invocations += 1;
+        throw new Error("builder-crash");
+      }
+      builder.invocations += 1;
+      return {
+        protocol: PROTOCOL_V1,
+        envelope_id: envClock.id("env"),
+        kind: "builder_result",
+        cycle_id: input.cycle.cycle_id,
+        request_id: input.request.request_id,
+        from_role: "builder",
+        to_role: "program_control",
+        created_at: envClock.now(),
+        body: {
+          status: "CANDIDATE_READY",
+          candidate_sha: "sha-r4-gate",
+          evidence_refs: ["evidence/r4-gate"],
+          notes: null,
+        },
+      };
+    };
+    const pc = new FakeProgramControlAdapter(
+      [
+        pcBuildAwait,
+        pcDecision({
+          decision: "HUMAN_GATE",
+          human_gate_purpose: "confirm retry",
+          human_gate_choices: ["RETRY", "ABORT"],
+        }),
+        pcDecision({ decision: "RETRY" }),
+      ],
+      envClock,
+    );
+    const dispatcher = new Dispatcher(
+      handoff,
+      {
+        programControl: pc,
+        builder,
+        reviewer: new FakeReviewerAdapter([], envClock),
+      },
+      { owner: "d", leaseMs: 500 },
+    );
+    dispatcher.step(cycle.cycle_id); // PC BUILD
+    const failedReq = handoff.requireCycle(cycle.cycle_id).current_request_id!;
+    dispatcher.step(cycle.cycle_id); // builder fail
+    clock.advanceMs(1000);
+    handoff.recoverExpiredDispatches(store.now());
+    dispatcher.step(cycle.cycle_id); // retry budget → recovery
+    const lineage = handoff.requireCycle(cycle.cycle_id).recovery_lineage_id;
+    assert.ok(lineage);
+    assert.equal(
+      handoff.requireCycle(cycle.cycle_id).recovery_target_request_id,
+      failedReq,
+    );
+    dispatcher.step(cycle.cycle_id); // PC HUMAN_GATE
+    assert.equal(handoff.requireCycle(cycle.cycle_id).state, "HUMAN_GATE");
+    assert.equal(handoff.requireCycle(cycle.cycle_id).recovery_lineage_id, lineage);
+
+    const gate = handoff.openGateForCycle(cycle.cycle_id)!;
+    store.close();
+    const again = ControlStore.open({ stateDir: dir });
+    const h2 = new HandoffStore(again);
+    const env2 = envelopeClock(again);
+    assert.equal(h2.requireCycle(cycle.cycle_id).recovery_lineage_id, lineage);
+    h2.answerHumanGate({
+      gateId: gate.gate_id,
+      selectedChoice: "RETRY",
+      note: "retry",
+    });
+    const pc2 = new FakeProgramControlAdapter(
+      [pcDecision({ decision: "RETRY" })],
+      env2,
+    );
+    const builder2 = new FakeBuilderAdapter(
+      [{ status: "CANDIDATE_READY", candidate_sha: "sha-r4-gate" }],
+      env2,
+    );
+    builder2.build = (input) => {
+      builder2.invocations += 1;
+      return {
+        protocol: PROTOCOL_V1,
+        envelope_id: env2.id("env"),
+        kind: "builder_result",
+        cycle_id: input.cycle.cycle_id,
+        request_id: input.request.request_id,
+        from_role: "builder",
+        to_role: "program_control",
+        created_at: env2.now(),
+        body: {
+          status: "CANDIDATE_READY",
+          candidate_sha: "sha-r4-gate",
+          evidence_refs: ["evidence/r4-gate"],
+          notes: null,
+        },
+      };
+    };
+    const d2 = new Dispatcher(
+      h2,
+      {
+        programControl: pc2,
+        builder: builder2,
+        reviewer: new FakeReviewerAdapter([], env2),
+      },
+      { owner: "d2", leaseMs: 5000 },
+    );
+    const humanApplied = d2.step(cycle.cycle_id);
+    assert.equal(humanApplied.action, "human_gate_applied");
+    assert.equal(h2.requireCycle(cycle.cycle_id).recovery_lineage_id, lineage);
+    assert.equal(h2.requireCycle(cycle.cycle_id).recovery_target_request_id, failedReq);
+    const retried = d2.step(cycle.cycle_id);
+    assert.equal(retried.action, "pc_decision");
+    const live = h2.requireCycle(cycle.cycle_id);
+    assert.equal(live.recovery_lineage_id, null);
+    const body = h2
+      .listEnvelopes(cycle.cycle_id)
+      .find((e) => e.request_id === live.current_request_id)!.body as {
+      retry_of_request_id: string;
+    };
+    assert.equal(body.retry_of_request_id, failedReq);
+    again.close();
+  } finally {
+    cleanup(dir);
+  }
+});

@@ -20,6 +20,8 @@ Recorded: 2026-08-29
 | **IMPLEMENTATION SHA (R2)** | `00694824e0186ebf8cd0939901227c1cc46014a0` | Slice 1 R2: F01 policy provenance + F02 PC semantic RETRY + killed-child fence regression |
 | **INDEPENDENT REVIEW TARGET SHA (R2)** | `5414686a7864749655d54318efbfab0028d832b4` | R2 review HEAD; OWATA-REQ-0027 disposition **REWORK** (F01 request envelope roles; F02 accepted target; F03 Human Gate) |
 | **IMPLEMENTATION SHA (R3)** | `6c867ce46db4a3bf4bca922904722c2ae00e875e` | Slice 1 R3: complete PC request authority + failed-target proof + Human Gate recovery retention |
+| **INDEPENDENT REVIEW TARGET SHA (R3)** | `26add9c2f718281fa3e07512e9274d9d6d3d88df` | R3 review HEAD; OWATA-REQ-0030 disposition **REWORK** (F01 recovery lineage provenance) |
+| **IMPLEMENTATION SHA (R4)** | *(recorded after R4 land)* | Slice 1 R4: explicit recovery_lineage_id binding + stale-lineage rejection |
 
 Any later evidence-only follow-up that only fills this table is **not** the implementation SHA.
 
@@ -230,6 +232,56 @@ exit 0
 ```
 
 R3 regressions cover F01 forged request envelope roles, F02 accepted-target / no-evidence rejection, and F03 Human Gate recovery retention through reopen → Human RETRY → PC RETRY. Prior suites remain green.
+
+## Slice 1 R4 — OWATA-REQ-0030-F01 recovery lineage provenance
+
+Baseline / prior review HEAD: `26add9c2f718281fa3e07512e9274d9d6d3d88df`.
+
+### OWATA-REQ-0030-F01 — RESOLVED
+
+Semantic RETRY now requires an explicit durable **recovery lineage**:
+
+- `cycles.recovery_lineage_id` (additive v5 column)
+- `enterRecovery()` creates a new lineage id, binds `recovery_target_request_id`, sets `recovery_reason`, and appends authoritative `cycle.recovery_required` with the same identity fields
+- `assertRetryableRecoveryTarget()` requires active lineage id, matching durable lineage event (`cycle_id` / `recovery_lineage_id` / `request_id` / `reason`), no ACCEPTED result, and failure evidence compatible with the current lineage
+- Historical failure evidence for request A cannot authorize RETRY while the current lineage identifies request B (stale-lineage regression)
+- Human Gate preserves both `recovery_target_request_id` and `recovery_lineage_id` through reopen → Human RETRY → PC RETRY
+- ACCEPT / ABORT / REDESIGN / successful semantic RETRY clear target + lineage together
+- Later genuine recovery supersedes the prior lineage id
+
+### Semantic PC RETRY chain (R4)
+
+```text
+Builder/Reviewer failure
+→ enterRecovery(requestId=A)  # new recovery_lineage_id = L-A
+→ RECOVERY_REQUIRED (target=A, lineage=L-A)
+→ PC ADJUDICATE (lineage preserved)
+→ optional HUMAN_GATE (lineage preserved; reopen-safe)
+→ optional Human RETRY → AWAITING_PC (lineage preserved)
+→ PC Decision RETRY
+→ assertRetryableRecoveryTarget (lineage event + failure evidence)
+→ new Control Request B (retry_of_request_id=A, authorized_by_decision_id=RETRY Decision)
+→ clear recovery_target + recovery_lineage
+→ Builder/Reviewer proceeds with fresh dispatch budget
+```
+
+### Validation (R4)
+
+```text
+$ npm ci --ignore-scripts
+$ npm ls --all
+$ npm test
+91 pass / 0 fail
+
+$ npm run build
+exit 0
+
+$ git diff --check
+exit 0
+
+$ git diff --check 26add9c2f718281fa3e07512e9274d9d6d3d88df..HEAD
+exit 0
+```
 
 ## Provider integration
 

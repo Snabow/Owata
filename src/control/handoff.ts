@@ -37,6 +37,7 @@ export interface CycleRecord {
   policy: CyclePolicy;
   policy_authorized_by_decision_id: string | null;
   recovery_target_request_id: string | null;
+  recovery_lineage_id: string | null;
   max_dispatch_retries: number;
   recovery_reason: string | null;
   created_at: string;
@@ -97,6 +98,8 @@ function mapCycle(row: Record<string, unknown>): CycleRecord {
       row.recovery_target_request_id == null
         ? null
         : String(row.recovery_target_request_id),
+    recovery_lineage_id:
+      row.recovery_lineage_id == null ? null : String(row.recovery_lineage_id),
     max_dispatch_retries: Number(row.max_dispatch_retries),
     recovery_reason:
       row.recovery_reason == null ? null : String(row.recovery_reason),
@@ -160,6 +163,7 @@ export class HandoffStore {
       policy: cycle.policy,
       policy_authorized_by_decision_id: cycle.policy_authorized_by_decision_id,
       recovery_target_request_id: cycle.recovery_target_request_id,
+      recovery_lineage_id: cycle.recovery_lineage_id,
       recovery_reason: cycle.recovery_reason,
     };
   }
@@ -187,9 +191,9 @@ export class HandoffStore {
              cycle_id, project_id, work_package_ref, base_sha,
              latest_candidate_sha, accepted_candidate_sha, state,
              current_request_id, policy_json, policy_authorized_by_decision_id,
-             recovery_target_request_id, max_dispatch_retries, recovery_reason,
-             created_at, updated_at
-           ) VALUES (?, ?, ?, ?, NULL, NULL, 'AWAITING_PC', NULL, ?, NULL, NULL, ?, NULL, ?, ?)`,
+             recovery_target_request_id, recovery_lineage_id, max_dispatch_retries,
+             recovery_reason, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, NULL, NULL, 'AWAITING_PC', NULL, ?, NULL, NULL, NULL, ?, NULL, ?, ?)`,
         )
         .run(
           cycleId,
@@ -388,7 +392,7 @@ export class HandoffStore {
 
   /**
    * Program Control semantic RETRY may only resume a genuinely failed Builder/Reviewer
-   * request for the current recovery lineage. recovery_target_request_id alone is not proof.
+   * request for the CURRENT recovery lineage. recovery_target_request_id alone is not proof.
    */
   assertRetryableRecoveryTarget(
     cycle: CycleRecord,
@@ -400,10 +404,48 @@ export class HandoffStore {
         "RETRY requires an active recovery lineage (recovery_reason)",
       );
     }
+    if (!cycle.recovery_lineage_id) {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY requires an active recovery_lineage_id",
+      );
+    }
     if (cycle.recovery_target_request_id !== requestId) {
       throw new ControlError(
         "PROTOCOL",
         "RETRY recovery_target_request_id mismatch",
+      );
+    }
+    const lineageEvent = this.findCurrentRecoveryLineageEvent(cycle);
+    if (!lineageEvent) {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY missing durable recovery-lineage event",
+      );
+    }
+    const payload = lineageEvent.payload;
+    if (String(payload.cycle_id ?? "") !== cycle.cycle_id) {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY recovery-lineage event cycle_id mismatch",
+      );
+    }
+    if (String(payload.recovery_lineage_id ?? "") !== cycle.recovery_lineage_id) {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY recovery-lineage event lineage_id mismatch",
+      );
+    }
+    if (String(payload.request_id ?? "") !== requestId) {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY recovery-lineage event request_id mismatch",
+      );
+    }
+    if (String(payload.reason ?? "") !== cycle.recovery_reason) {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY recovery-lineage event reason mismatch",
       );
     }
     if (requestId === cycle.current_request_id) {
@@ -456,7 +498,202 @@ export class HandoffStore {
         "RETRY recovery target lacks durable failure/recovery evidence",
       );
     }
+    if (
+      !this.failureEvidenceCompatibleWithLineage(
+        cycle.cycle_id,
+        requestId,
+        cycle.recovery_lineage_id,
+      )
+    ) {
+      throw new ControlError(
+        "PROTOCOL",
+        "RETRY failure evidence is not compatible with the current recovery lineage",
+      );
+    }
     return failed;
+  }
+
+  /** Authoritative durable event establishing the cycle's current recovery lineage. */
+  findCurrentRecoveryLineageEvent(
+    cycle: CycleRecord,
+  ): { event_id: string; event_type: string; payload: Record<string, unknown> } | undefined {
+    if (!cycle.recovery_lineage_id) return undefined;
+    return this.store.listEvents().find(
+      (e) =>
+        e.event_type === "cycle.recovery_required" &&
+        String(e.payload.recovery_lineage_id ?? "") === cycle.recovery_lineage_id,
+    );
+  }
+
+  /**
+   * Failure evidence for the target must relate to this lineage (not merely any historical
+   * failure for the same request_id from an unrelated era). The lineage event itself binds
+   * request_id; additional evidence must mention the request and either share the lineage id
+   * or be a dispatch-state failure for that request.
+   */
+  failureEvidenceCompatibleWithLineage(
+    cycleId: string,
+    requestId: string,
+    lineageId: string,
+  ): boolean {
+    const rows = this.store.db
+      .prepare(
+        `SELECT state FROM dispatches WHERE cycle_id = ? AND request_id = ?`,
+      )
+      .all(cycleId, requestId) as Array<{ state: string }>;
+    if (
+      rows.some(
+        (r) =>
+          r.state === "REJECTED" ||
+          r.state === "EXPIRED" ||
+          r.state === "RECOVERED",
+      )
+    ) {
+      return true;
+    }
+    return this.store.listEvents().some((e) => {
+      if (
+        e.event_type !== "cycle.recovery_required" &&
+        e.event_type !== "cycle.capability_blocked" &&
+        e.event_type !== "cycle.result_rejected"
+      ) {
+        return false;
+      }
+      if (String(e.payload.request_id ?? "") !== requestId) return false;
+      if (e.payload.cycle_id != null && String(e.payload.cycle_id) !== cycleId) {
+        return false;
+      }
+      const eventLineage = e.payload.recovery_lineage_id;
+      if (eventLineage != null && String(eventLineage) !== lineageId) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  /**
+   * Single entry point into RECOVERY_REQUIRED for Builder/Reviewer-caused recovery.
+   * Creates a new recovery_lineage_id bound to the failed request and appends an
+   * authoritative cycle.recovery_required event. Does not fabricate a target for PC-only failures.
+   */
+  enterRecovery(args: {
+    cycleId: string;
+    requestId: string | null;
+    reason: string;
+    evidenceEventType?: "cycle.capability_blocked" | "cycle.result_rejected";
+    evidencePayload?: Record<string, unknown>;
+  }): CycleRecord {
+    const ts = nowIso(() => this.store.now());
+    const cycle = this.requireCycle(args.cycleId);
+    let recoveryTarget: string | null = null;
+    let lineageId: string | null = null;
+    let establishLineage = false;
+
+    if (args.requestId) {
+      const request = this.listEnvelopes(args.cycleId).find(
+        (e) => e.kind === "control_request" && e.request_id === args.requestId,
+      ) as CanonicalEnvelope<ControlRequestBody> | undefined;
+      if (
+        request &&
+        (request.body.target_role === "builder" ||
+          request.body.target_role === "reviewer")
+      ) {
+        recoveryTarget = args.requestId;
+        lineageId = this.store.nextId("rline");
+        establishLineage = true;
+      }
+    }
+
+    if (args.evidenceEventType) {
+      this.store.appendEvent(args.evidenceEventType, {
+        project_id: cycle.project_id,
+        work_id: null,
+        ts,
+        payload: {
+          cycle_id: args.cycleId,
+          request_id: args.requestId,
+          recovery_lineage_id: establishLineage
+            ? lineageId
+            : cycle.recovery_lineage_id,
+          ...(args.evidencePayload ?? {}),
+        },
+      });
+    }
+
+    if (establishLineage && lineageId && recoveryTarget) {
+      this.store.db
+        .prepare(
+          `UPDATE cycles SET state = ?, recovery_reason = ?, recovery_target_request_id = ?,
+           recovery_lineage_id = ?, current_request_id = NULL, updated_at = ? WHERE cycle_id = ?`,
+        )
+        .run(
+          "RECOVERY_REQUIRED",
+          args.reason,
+          recoveryTarget,
+          lineageId,
+          ts,
+          args.cycleId,
+        );
+      this.store.appendEvent("cycle.recovery_required", {
+        project_id: cycle.project_id,
+        work_id: null,
+        ts,
+        payload: {
+          cycle_id: args.cycleId,
+          request_id: recoveryTarget,
+          reason: args.reason,
+          recovery_lineage_id: lineageId,
+          recovery_target_request_id: recoveryTarget,
+          ...(args.evidencePayload ?? {}),
+        },
+      });
+      this.store.appendEvent("cycle.transitioned", {
+        project_id: cycle.project_id,
+        work_id: null,
+        ts,
+        payload: {
+          cycle_id: args.cycleId,
+          from: cycle.state,
+          to: "RECOVERY_REQUIRED",
+          recovery_reason: args.reason,
+          recovery_target_request_id: recoveryTarget,
+          recovery_lineage_id: lineageId,
+        },
+      });
+    } else {
+      // PC-only / non-role recovery: do not invent or rewrite an active Builder/Reviewer lineage.
+      if (cycle.recovery_lineage_id) {
+        this.store.db
+          .prepare(
+            `UPDATE cycles SET state = ?, updated_at = ? WHERE cycle_id = ?`,
+          )
+          .run("RECOVERY_REQUIRED", ts, args.cycleId);
+      } else {
+        this.store.db
+          .prepare(
+            `UPDATE cycles SET state = ?, recovery_reason = ?, updated_at = ? WHERE cycle_id = ?`,
+          )
+          .run("RECOVERY_REQUIRED", args.reason, ts, args.cycleId);
+      }
+      this.store.appendEvent("cycle.transitioned", {
+        project_id: cycle.project_id,
+        work_id: null,
+        ts,
+        payload: {
+          cycle_id: args.cycleId,
+          from: cycle.state,
+          to: "RECOVERY_REQUIRED",
+          recovery_reason: cycle.recovery_lineage_id
+            ? cycle.recovery_reason
+            : args.reason,
+          recovery_target_request_id: cycle.recovery_target_request_id,
+          recovery_lineage_id: cycle.recovery_lineage_id,
+          note: "pc_or_non_role_recovery_preserved_lineage",
+        },
+      });
+    }
+
+    return this.requireCycle(args.cycleId);
   }
 
   /** Durable failure evidence reconstructible from SQLite (dispatches and/or events). */
@@ -513,6 +750,7 @@ export class HandoffStore {
     extra?: {
       recovery_reason?: string | null;
       recovery_target_request_id?: string | null;
+      recovery_lineage_id?: string | null;
       latest_candidate_sha?: string | null;
       accepted_candidate_sha?: string | null;
       current_request_id?: string | null;
@@ -548,6 +786,20 @@ export class HandoffStore {
       this.store.db
         .prepare(`UPDATE cycles SET recovery_target_request_id = ? WHERE cycle_id = ?`)
         .run(extra.recovery_target_request_id ?? null, cycleId);
+      // Clearing the recovery target terminates the active lineage unless explicitly preserved.
+      if (
+        extra.recovery_target_request_id == null &&
+        !("recovery_lineage_id" in extra)
+      ) {
+        this.store.db
+          .prepare(`UPDATE cycles SET recovery_lineage_id = NULL WHERE cycle_id = ?`)
+          .run(cycleId);
+      }
+    }
+    if (extra && "recovery_lineage_id" in extra) {
+      this.store.db
+        .prepare(`UPDATE cycles SET recovery_lineage_id = ? WHERE cycle_id = ?`)
+        .run(extra.recovery_lineage_id ?? null, cycleId);
     }
     this.store.appendEvent("cycle.transitioned", {
       project_id: current.project_id,
@@ -706,24 +958,17 @@ export class HandoffStore {
     }
     const attempt = (latest?.attempt_number ?? 0) + 1;
     if (attempt > cycle.max_dispatch_retries) {
-      const recoveryTarget =
+      const roleRequestId =
         args.targetRole === "builder" || args.targetRole === "reviewer"
           ? args.requestId
-          : cycle.recovery_target_request_id;
-      this.transition(args.cycleId, "RECOVERY_REQUIRED", {
-        recovery_reason: "dispatch_retry_budget_exhausted",
-        recovery_target_request_id: recoveryTarget,
-      });
-      this.store.appendEvent("cycle.recovery_required", {
-        project_id: cycle.project_id,
-        work_id: null,
-        ts,
-        payload: {
-          cycle_id: args.cycleId,
-          request_id: args.requestId,
-          reason: "dispatch_retry_budget_exhausted",
+          : null;
+      this.enterRecovery({
+        cycleId: args.cycleId,
+        requestId: roleRequestId,
+        reason: "dispatch_retry_budget_exhausted",
+        evidencePayload: {
           attempts: attempt - 1,
-          recovery_target_request_id: recoveryTarget,
+          exhausted_request_id: args.requestId,
         },
       });
       throw new ControlError(
@@ -877,30 +1122,21 @@ export class HandoffStore {
     requestId: string;
     missing: string[];
   }): void {
-    const ts = nowIso(() => this.store.now());
-    const cycle = this.requireCycle(args.cycleId);
     const request = this.listEnvelopes(args.cycleId).find(
       (e) => e.kind === "control_request" && e.request_id === args.requestId,
     ) as CanonicalEnvelope<ControlRequestBody> | undefined;
-    const recoveryTarget =
+    const roleRequestId =
       request &&
       (request.body.target_role === "builder" ||
         request.body.target_role === "reviewer")
         ? args.requestId
-        : cycle.recovery_target_request_id;
-    this.store.appendEvent("cycle.capability_blocked", {
-      project_id: cycle.project_id,
-      work_id: null,
-      ts,
-      payload: {
-        cycle_id: args.cycleId,
-        request_id: args.requestId,
-        missing: args.missing,
-      },
-    });
-    this.transition(args.cycleId, "RECOVERY_REQUIRED", {
-      recovery_reason: "CAPABILITY_BLOCK",
-      recovery_target_request_id: recoveryTarget,
+        : null;
+    this.enterRecovery({
+      cycleId: args.cycleId,
+      requestId: roleRequestId,
+      reason: "CAPABILITY_BLOCK",
+      evidenceEventType: "cycle.capability_blocked",
+      evidencePayload: { missing: args.missing },
     });
   }
 

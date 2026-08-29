@@ -133,7 +133,7 @@ export class Dispatcher {
   private ensureProgramControlRequest(cycle: CycleRecord): CycleRecord {
     if (
       cycle.state === "RECOVERY_REQUIRED" &&
-      !cycle.recovery_target_request_id &&
+      !cycle.recovery_lineage_id &&
       cycle.current_request_id
     ) {
       const maybe = this.handoff
@@ -148,8 +148,10 @@ export class Dispatcher {
         (maybe.body.target_role === "builder" ||
           maybe.body.target_role === "reviewer")
       ) {
-        cycle = this.handoff.transition(cycle.cycle_id, cycle.state, {
-          recovery_target_request_id: maybe.request_id!,
+        cycle = this.handoff.enterRecovery({
+          cycleId: cycle.cycle_id,
+          requestId: maybe.request_id!,
+          reason: cycle.recovery_reason ?? "recovery_target_backfill",
         });
       }
     }
@@ -250,27 +252,20 @@ export class Dispatcher {
 
     const adapter = this.adapterFor(role);
     if (adapter.identity.role !== role) {
-      const ts = nowIso(() => this.handoff.store.now());
       const recoveryTarget =
-        role === "builder" || role === "reviewer"
-          ? request.request_id!
-          : cycle.recovery_target_request_id;
-      this.handoff.store.appendEvent("cycle.result_rejected", {
-        project_id: cycle.project_id,
-        work_id: null,
-        ts,
-        payload: {
-          cycle_id: cycle.cycle_id,
-          request_id: request.request_id,
+        role === "builder" || role === "reviewer" ? request.request_id! : null;
+      this.handoff.enterRecovery({
+        cycleId: cycle.cycle_id,
+        requestId: recoveryTarget,
+        reason: "ADAPTER_ROLE_MISMATCH",
+        evidenceEventType: "cycle.result_rejected",
+        evidencePayload: {
           failure_class: "RESULT_INVALID",
           detail: `adapter identity.role ${adapter.identity.role} != ${role}`,
         },
       });
       return {
-        cycle: this.handoff.transition(cycle.cycle_id, "RECOVERY_REQUIRED", {
-          recovery_reason: "ADAPTER_ROLE_MISMATCH",
-          recovery_target_request_id: recoveryTarget,
-        }),
+        cycle: this.handoff.requireCycle(cycle.cycle_id),
         action: "adapter_role_mismatch",
         detail: { configured: adapter.identity.role, expected: role },
       };
@@ -602,6 +597,7 @@ export class Dispatcher {
           accepted_candidate_sha: cycle.latest_candidate_sha,
           recovery_reason: null,
           recovery_target_request_id: null,
+          recovery_lineage_id: null,
           current_request_id: null,
         });
       case "RETRY":
@@ -610,6 +606,7 @@ export class Dispatcher {
         return this.handoff.transition(cycle.cycle_id, "AWAITING_PC", {
           recovery_reason: "REDESIGN",
           recovery_target_request_id: null,
+          recovery_lineage_id: null,
           current_request_id: null,
         });
       case "HUMAN_GATE":
@@ -619,8 +616,7 @@ export class Dispatcher {
           purpose: body.human_gate_purpose ?? "Human gate",
           allowedChoices: body.human_gate_choices ?? ["ACCEPT", "ABORT"],
         });
-        // Preserve recovery_target_request_id through HUMAN_GATE so Human RETRY
-        // can return to PC with enough provenance for a PC semantic RETRY.
+        // Preserve recovery_target_request_id and recovery_lineage_id through HUMAN_GATE.
         return this.handoff.transition(cycle.cycle_id, "HUMAN_GATE", {
           current_request_id: null,
         });
@@ -628,6 +624,7 @@ export class Dispatcher {
         return this.handoff.transition(cycle.cycle_id, "ABORTED", {
           recovery_reason: "ABORT",
           recovery_target_request_id: null,
+          recovery_lineage_id: null,
           current_request_id: null,
         });
     }
@@ -697,6 +694,7 @@ export class Dispatcher {
       current_request_id: requestId,
       recovery_reason: null,
       recovery_target_request_id: null,
+      recovery_lineage_id: null,
     });
   }
 
@@ -752,6 +750,7 @@ export class Dispatcher {
       current_request_id: requestId,
       recovery_reason: null,
       recovery_target_request_id: null,
+      recovery_lineage_id: null,
     });
   }
 
@@ -858,18 +857,19 @@ export class Dispatcher {
           accepted_candidate_sha: cycle.latest_candidate_sha,
           recovery_reason: null,
           recovery_target_request_id: null,
+          recovery_lineage_id: null,
         });
       }
       if (choice === "ABORT") {
         return this.handoff.transition(cycle.cycle_id, "ABORTED", {
           recovery_reason: "ABORT",
           recovery_target_request_id: null,
+          recovery_lineage_id: null,
         });
       }
       if (choice === "RETRY") {
-        // Human Gate RETRY returns to PC with recovery target preserved for a PC Decision RETRY.
+        // Human Gate RETRY returns to PC preserving recovery target + lineage for PC RETRY.
         return this.handoff.transition(cycle.cycle_id, "AWAITING_PC", {
-          recovery_reason: "HUMAN_GATE_RETRY",
           current_request_id: null,
         });
       }
@@ -877,6 +877,7 @@ export class Dispatcher {
         recovery_reason: choice,
         current_request_id: null,
         recovery_target_request_id: null,
+        recovery_lineage_id: null,
       });
     });
     return { cycle: next, action: "human_gate_applied", detail: { choice } };
