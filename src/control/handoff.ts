@@ -5,6 +5,7 @@ import {
   parseCanonicalEnvelope,
   parseCyclePolicy,
   PROTOCOL_V1,
+  canonicalEnvelopeIdentity,
   type CanonicalEnvelope,
   type CyclePolicy,
   type CycleState,
@@ -32,6 +33,7 @@ export interface CycleRecord {
   state: CycleState;
   current_request_id: string | null;
   policy: CyclePolicy;
+  policy_authorized_by_decision_id: string | null;
   max_dispatch_retries: number;
   recovery_reason: string | null;
   created_at: string;
@@ -84,6 +86,10 @@ function mapCycle(row: Record<string, unknown>): CycleRecord {
     current_request_id:
       row.current_request_id == null ? null : String(row.current_request_id),
     policy: parseCyclePolicy(JSON.parse(String(row.policy_json))),
+    policy_authorized_by_decision_id:
+      row.policy_authorized_by_decision_id == null
+        ? null
+        : String(row.policy_authorized_by_decision_id),
     max_dispatch_retries: Number(row.max_dispatch_retries),
     recovery_reason:
       row.recovery_reason == null ? null : String(row.recovery_reason),
@@ -145,6 +151,7 @@ export class HandoffStore {
       accepted_candidate_sha: cycle.accepted_candidate_sha,
       current_request_id: cycle.current_request_id,
       policy: cycle.policy,
+      policy_authorized_by_decision_id: cycle.policy_authorized_by_decision_id,
       recovery_reason: cycle.recovery_reason,
     };
   }
@@ -153,9 +160,16 @@ export class HandoffStore {
     projectId: string;
     workPackageRef: string;
     baseSha?: string | null;
-    policy: CyclePolicy;
+    policy?: CyclePolicy;
     maxDispatchRetries?: number;
   }): CycleRecord {
+    const policy = args.policy ?? { on_builder_candidate: "AWAIT_PC" };
+    if (policy.on_builder_candidate === "DISPATCH_REVIEW") {
+      throw new ControlError(
+        "POLICY_PROVENANCE",
+        "DISPATCH_REVIEW requires Program Control authorization; start with AWAIT_PC and install via Decision",
+      );
+    }
     const ts = nowIso(() => this.store.now());
     const cycleId = this.store.nextId("cyc");
     return this.store.runImmediate(() => {
@@ -164,16 +178,16 @@ export class HandoffStore {
           `INSERT INTO cycles (
              cycle_id, project_id, work_package_ref, base_sha,
              latest_candidate_sha, accepted_candidate_sha, state,
-             current_request_id, policy_json, max_dispatch_retries,
-             recovery_reason, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, NULL, NULL, 'AWAITING_PC', NULL, ?, ?, NULL, ?, ?)`,
+             current_request_id, policy_json, policy_authorized_by_decision_id,
+             max_dispatch_retries, recovery_reason, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, NULL, NULL, 'AWAITING_PC', NULL, ?, NULL, ?, NULL, ?, ?)`,
         )
         .run(
           cycleId,
           args.projectId,
           args.workPackageRef,
           args.baseSha ?? null,
-          JSON.stringify(args.policy),
+          JSON.stringify(policy),
           args.maxDispatchRetries ?? 3,
           ts,
           ts,
@@ -185,11 +199,48 @@ export class HandoffStore {
         payload: {
           cycle_id: cycleId,
           work_package_ref: args.workPackageRef,
-          policy: args.policy,
+          policy,
         },
       });
       return this.getCycle(cycleId)!;
     });
+  }
+
+  installPolicyFromDecision(
+    cycleId: string,
+    decisionEnvelopeId: string,
+    policy: CyclePolicy,
+  ): CycleRecord {
+    const decision = this.getEnvelope(decisionEnvelopeId);
+    if (!decision || decision.kind !== "program_control_decision") {
+      throw new ControlError(
+        "POLICY_PROVENANCE",
+        "Policy install requires an accepted Program Control Decision",
+      );
+    }
+    if (decision.cycle_id !== cycleId) {
+      throw new ControlError("POLICY_PROVENANCE", "Policy decision cycle mismatch");
+    }
+    const ts = nowIso(() => this.store.now());
+    this.store.db
+      .prepare(
+        `UPDATE cycles
+         SET policy_json = ?, policy_authorized_by_decision_id = ?, updated_at = ?
+         WHERE cycle_id = ?`,
+      )
+      .run(JSON.stringify(policy), decisionEnvelopeId, ts, cycleId);
+    return this.requireCycle(cycleId);
+  }
+
+  mayAutoDispatchReview(cycle: CycleRecord): boolean {
+    if (cycle.policy.on_builder_candidate !== "DISPATCH_REVIEW") return false;
+    if (!cycle.policy_authorized_by_decision_id) return false;
+    const auth = this.getEnvelope(cycle.policy_authorized_by_decision_id);
+    return (
+      auth != null &&
+      auth.kind === "program_control_decision" &&
+      auth.cycle_id === cycle.cycle_id
+    );
   }
 
   getCycle(cycleId: string): CycleRecord | undefined {
@@ -260,20 +311,30 @@ export class HandoffStore {
   persistEnvelope(raw: unknown): CanonicalEnvelope {
     const parsed = parseCanonicalEnvelope(raw);
     const existing = this.store.db
-      .prepare(`SELECT body_json FROM envelopes WHERE envelope_id = ?`)
-      .get(parsed.envelope_id) as { body_json: string } | undefined;
+      .prepare(
+        `SELECT envelope_id, cycle_id, kind, request_id, from_role, to_role, body_json, created_at
+         FROM envelopes WHERE envelope_id = ?`,
+      )
+      .get(parsed.envelope_id) as Record<string, unknown> | undefined;
     if (existing) {
       const prev = parseCanonicalEnvelope({
-        ...parsed,
-        body: JSON.parse(existing.body_json),
+        protocol: PROTOCOL_V1,
+        envelope_id: String(existing.envelope_id),
+        kind: String(existing.kind),
+        cycle_id: String(existing.cycle_id),
+        request_id: existing.request_id == null ? null : String(existing.request_id),
+        from_role: String(existing.from_role),
+        to_role: existing.to_role == null ? null : String(existing.to_role),
+        created_at: String(existing.created_at),
+        body: JSON.parse(String(existing.body_json)),
       });
-      if (JSON.stringify(prev.body) !== JSON.stringify(parsed.body)) {
+      if (canonicalEnvelopeIdentity(prev) !== canonicalEnvelopeIdentity(parsed)) {
         throw new ControlError(
           "DUPLICATE_ENVELOPE",
-          `envelope_id ${parsed.envelope_id} already exists with a different body`,
+          `envelope_id ${parsed.envelope_id} already exists with conflicting canonical identity`,
         );
       }
-      return parsed;
+      return prev;
     }
     this.store.db
       .prepare(

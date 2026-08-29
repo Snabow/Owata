@@ -66,6 +66,7 @@ export type ReviewerVerdict = "PASS" | "REWORK" | "BLOCK";
 
 export type CycleState =
   | "AWAITING_PC"
+  | "DISPATCHING_PC"
   | "DISPATCHING_BUILD"
   | "DISPATCHING_REVIEW"
   | "HUMAN_GATE"
@@ -76,6 +77,10 @@ export type CycleState =
 export type BuilderCandidatePolicy = "DISPATCH_REVIEW" | "AWAIT_PC";
 
 export interface CyclePolicy {
+  on_builder_candidate: BuilderCandidatePolicy;
+}
+
+export interface PolicyInstall {
   on_builder_candidate: BuilderCandidatePolicy;
 }
 
@@ -131,6 +136,8 @@ export interface PcDecisionBody {
   rework_scope: string | null;
   human_gate_purpose: string | null;
   human_gate_choices: PcDecisionKind[] | null;
+  /** When set, installs standing transition policy authorized by this Decision. */
+  install_policy: PolicyInstall | null;
 }
 
 export interface HumanGateBody {
@@ -367,7 +374,20 @@ function parsePcDecision(body: Record<string, unknown>): PcDecisionBody {
     rework_scope: optionalString(body, "rework_scope"),
     human_gate_purpose: optionalString(body, "human_gate_purpose"),
     human_gate_choices: choices,
+    install_policy: parsePolicyInstall(body.install_policy),
   };
+}
+
+function parsePolicyInstall(raw: unknown): PolicyInstall | null {
+  if (raw == null) return null;
+  if (!isRecord(raw)) {
+    throw new ControlError("RESULT_INVALID", "install_policy must be an object");
+  }
+  const v = raw.on_builder_candidate;
+  if (v !== "DISPATCH_REVIEW" && v !== "AWAIT_PC") {
+    throw new ControlError("RESULT_INVALID", "Unknown install_policy.on_builder_candidate");
+  }
+  return { on_builder_candidate: v };
 }
 
 function parseHumanGate(body: Record<string, unknown>): HumanGateBody {
@@ -463,6 +483,21 @@ export function parseCyclePolicy(raw: unknown): CyclePolicy {
     throw new ControlError("RESULT_INVALID", "Unknown on_builder_candidate policy");
   }
   return { on_builder_candidate: v };
+}
+
+/** Stable identity serialization for envelope idempotency (all canonical fields). */
+export function canonicalEnvelopeIdentity(env: CanonicalEnvelope): string {
+  return JSON.stringify({
+    protocol: env.protocol,
+    envelope_id: env.envelope_id,
+    kind: env.kind,
+    cycle_id: env.cycle_id,
+    request_id: env.request_id,
+    from_role: env.from_role,
+    to_role: env.to_role,
+    created_at: env.created_at,
+    body: env.body,
+  });
 }
 
 export function missingCapabilities(

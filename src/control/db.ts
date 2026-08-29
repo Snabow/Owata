@@ -177,6 +177,11 @@ function migrate(db: DatabaseSync, stateDir: string): void {
     );
   }
 
+  // Idempotent additive columns for already-migrated v5 databases.
+  if (version === SCHEMA_VERSION) {
+    addColumnIfMissing(db, "cycles", "policy_authorized_by_decision_id", "TEXT");
+  }
+
   // Crash recovery / prior incomplete projection rebuild: converge from SQLite.
   reconcileEventProjection(db, stateDir);
 }
@@ -286,6 +291,7 @@ function migrateToV5(db: DatabaseSync): void {
       state TEXT NOT NULL,
       current_request_id TEXT,
       policy_json TEXT NOT NULL,
+      policy_authorized_by_decision_id TEXT,
       max_dispatch_retries INTEGER NOT NULL DEFAULT 3,
       recovery_reason TEXT,
       created_at TEXT NOT NULL,
@@ -345,6 +351,7 @@ function migrateToV5(db: DatabaseSync): void {
     );
   `);
 
+  addColumnIfMissing(db, "cycles", "policy_authorized_by_decision_id", "TEXT");
   db.prepare("UPDATE schema_meta SET version = 5 WHERE id = 1").run();
 }
 

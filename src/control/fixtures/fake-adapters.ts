@@ -13,6 +13,7 @@ import {
   PROTOCOL_V1,
   type Capability,
   type Finding,
+  type LogicalRole,
   type PcDecisionBody,
   type ReviewerVerdict,
 } from "../protocol.js";
@@ -23,19 +24,26 @@ export interface EnvelopeClock {
 }
 
 export class FakeProgramControlAdapter implements ProgramControlAdapter {
-  readonly identity: AdapterIdentity = {
-    adapter_id: "fake-program-control",
-    role: "program_control",
-  };
+  identity: AdapterIdentity;
   invocations = 0;
+  preflightCount = 0;
   caps: Capability[];
   private readonly script: PcDecisionBody[];
   private readonly clock: EnvelopeClock;
 
-  constructor(script: PcDecisionBody[], clock: EnvelopeClock, caps?: Capability[]) {
+  constructor(
+    script: PcDecisionBody[],
+    clock: EnvelopeClock,
+    caps?: Capability[],
+    identityRole: LogicalRole = "program_control",
+  ) {
     this.script = script;
     this.clock = clock;
     this.caps = caps ?? ["repository_read"];
+    this.identity = {
+      adapter_id: "fake-program-control",
+      role: identityRole,
+    };
   }
 
   capabilities(): Capability[] {
@@ -43,6 +51,7 @@ export class FakeProgramControlAdapter implements ProgramControlAdapter {
   }
 
   preflight(required: Capability[]): PreflightResult {
+    this.preflightCount += 1;
     return defaultPreflight(this.caps, required);
   }
 
@@ -67,12 +76,12 @@ export class FakeProgramControlAdapter implements ProgramControlAdapter {
 }
 
 export class FakeBuilderAdapter implements BuilderAdapter {
-  readonly identity: AdapterIdentity = {
-    adapter_id: "fake-builder",
-    role: "builder",
-  };
+  identity: AdapterIdentity;
   invocations = 0;
+  preflightCount = 0;
   caps: Capability[];
+  /** When set, return this raw envelope instead of the scripted builder result. */
+  maliciousRaw: unknown | null = null;
   private readonly script: Array<
     | { status: "CANDIDATE_READY"; candidate_sha: string }
     | { status: "BLOCKED" | "FAILED"; notes?: string }
@@ -84,6 +93,7 @@ export class FakeBuilderAdapter implements BuilderAdapter {
     script: FakeBuilderAdapter["script"],
     clock: EnvelopeClock,
     caps?: Capability[],
+    identityRole: LogicalRole = "builder",
   ) {
     this.script = script;
     this.clock = clock;
@@ -93,6 +103,10 @@ export class FakeBuilderAdapter implements BuilderAdapter {
       "exact_checkout",
       "command_execution",
     ];
+    this.identity = {
+      adapter_id: "fake-builder",
+      role: identityRole,
+    };
   }
 
   capabilities(): Capability[] {
@@ -100,11 +114,15 @@ export class FakeBuilderAdapter implements BuilderAdapter {
   }
 
   preflight(required: Capability[]): PreflightResult {
+    this.preflightCount += 1;
     return defaultPreflight(this.caps, required);
   }
 
   build(input: BuilderInput): unknown {
     this.invocations += 1;
+    if (this.maliciousRaw != null) {
+      return this.maliciousRaw;
+    }
     const next = this.script[this.invocations - 1];
     if (!next) {
       throw new Error("Fake Builder script exhausted");
@@ -125,18 +143,16 @@ export class FakeBuilderAdapter implements BuilderAdapter {
         status: next.status,
         candidate_sha: next.status === "CANDIDATE_READY" ? next.candidate_sha : null,
         evidence_refs: [`evidence/fake-${this.invocations}`],
-        notes: "status" in next && next.status !== "CANDIDATE_READY" ? next.notes ?? null : null,
+        notes: next.status !== "CANDIDATE_READY" ? next.notes ?? null : null,
       },
     };
   }
 }
 
 export class FakeReviewerAdapter implements ReviewerAdapter {
-  readonly identity: AdapterIdentity = {
-    adapter_id: "fake-reviewer",
-    role: "reviewer",
-  };
+  identity: AdapterIdentity;
   invocations = 0;
+  preflightCount = 0;
   caps: Capability[];
   private readonly script: Array<{
     verdict: ReviewerVerdict;
@@ -150,6 +166,7 @@ export class FakeReviewerAdapter implements ReviewerAdapter {
     script: FakeReviewerAdapter["script"],
     clock: EnvelopeClock,
     caps?: Capability[],
+    identityRole: LogicalRole = "reviewer",
   ) {
     this.script = script;
     this.clock = clock;
@@ -158,6 +175,10 @@ export class FakeReviewerAdapter implements ReviewerAdapter {
       "exact_checkout",
       "command_execution",
     ];
+    this.identity = {
+      adapter_id: "fake-reviewer",
+      role: identityRole,
+    };
   }
 
   capabilities(): Capability[] {
@@ -165,6 +186,7 @@ export class FakeReviewerAdapter implements ReviewerAdapter {
   }
 
   preflight(required: Capability[]): PreflightResult {
+    this.preflightCount += 1;
     return defaultPreflight(this.caps, required);
   }
 
