@@ -1,0 +1,15 @@
+{
+  "pc_decisions": [
+    "BUILD"
+  ],
+  "reviewer_verdicts": [],
+  "candidate_shas": [
+    "927ffd17f6dc308557e51ead9fc351b632775884"
+  ],
+  "accepted_candidate_sha": null,
+  "builder_invocations": 2,
+  "reviewer_invocations": 0,
+  "pc_invocations": 3,
+  "browser_relay_used": false,
+  "human_continuity_actions": 0
+}

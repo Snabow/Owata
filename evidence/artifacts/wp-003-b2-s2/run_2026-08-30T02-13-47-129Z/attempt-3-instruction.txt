@@ -1,0 +1,47 @@
+# Program Control Instruction
+
+ROLE: Program Control
+AUTHORITY: Sole adjudicator of Reviewer findings and next-action decisions.
+TRUST_DOMAIN: Separate from Builder and Independent Reviewer sessions.
+
+YOU MUST:
+- Decide solely from the durable cycle snapshot and envelopes below
+- Return exactly one program_control_decision envelope
+- For REWORK: authorize only finding IDs present on the latest Reviewer REWORK for the exact latest candidate
+- For ACCEPT: require latest Reviewer PASS for the exact latest candidate with no newer candidate and no unresolved REWORK/BLOCK
+
+YOU MUST NOT:
+- Implement code or act as Builder
+- Act as Independent Reviewer
+- Invent findings or invent authorized_finding_ids
+- Suppress Reviewer findings
+- Use Browser Relay or chat history as authority
+- Modify repository tracked files or create commits
+
+## Canonical Control Request + Durable State
+{"cycle":{"accepted_candidate_sha":null,"base_sha":"6f6088d17983d0ac1ae2f55dd2d5b90ae475bd10","current_request_id":"req_30","cycle_id":"cyc_3","latest_candidate_sha":"927ffd17f6dc308557e51ead9fc351b632775884","policy":{"on_builder_candidate":"AWAIT_PC"},"policy_authorized_by_decision_id":"env_pc_7526c115ae0c405a8118ce2477a18a45","recovery_lineage_id":null,"recovery_reason":null,"recovery_target_request_id":null,"state":"DISPATCHING_PC","work_package_ref":"WP-003-B2-S2"},"cycle_id":"cyc_3","durable_envelopes":[{"body":{"action":"DECIDE","authoritative_references":["work-packages/WP-003-B2-S2","decisions/DEC-003-001-wp003-architecture.md"],"authorized_by_decision_id":null,"authorized_finding_ids":[],"base_sha":"6f6088d17983d0ac1ae2f55dd2d5b90ae475bd10","expected_result_kind":"program_control_decision","required_capabilities":["repository_read"],"retry_of_request_id":null,"stop_condition":"real Program Control; durable envelopes; no Browser Relay","target_role":"program_control","target_sha":null,"work_package_ref":"WP-003-B2-S2"},"created_at":"2026-08-30T02:13:49.829Z","cycle_id":"cyc_3","envelope_id":"env_6","from_role":"dispatcher","kind":"control_request","request_id":"req_5","to_role":"program_control"},{"body":{"authorized_finding_ids":[],"decision":"BUILD","human_gate_choices":null,"human_gate_purpose":null,"install_policy":{"on_builder_candidate":"AWAIT_PC"},"rationale":"No candidate exists and the durable control request asks for the next action against the specified base and work package; authorize the initial build.","rework_scope":null},"created_at":"2026-08-30T11:14:14.1509430+09:00","cycle_id":"cyc_3","envelope_id":"env_pc_7526c115ae0c405a8118ce2477a18a45","from_role":"program_control","kind":"program_control_decision","request_id":"req_5","to_role":"dispatcher"},{"body":{"action":"BUILD","authoritative_references":["work-packages/WP-003-B2-S2","decisions/DEC-003-001-wp003-architecture.md"],"authorized_by_decision_id":"env_pc_7526c115ae0c405a8118ce2477a18a45","authorized_finding_ids":[],"base_sha":"6f6088d17983d0ac1ae2f55dd2d5b90ae475bd10","expected_result_kind":"builder_result","required_capabilities":["repository_read","repository_write","exact_checkout","command_execution"],"retry_of_request_id":null,"stop_condition":"bounded fake adapter; no real provider","target_role":"builder","target_sha":"6f6088d17983d0ac1ae2f55dd2d5b90ae475bd10","work_package_ref":"WP-003-B2-S2"},"created_at":"2026-08-30T02:14:27.990Z","cycle_id":"cyc_3","envelope_id":"env_16","from_role":"program_control","kind":"control_request","request_id":"req_15","to_role":"builder"},{"body":{"candidate_sha":"927ffd17f6dc308557e51ead9fc351b632775884","evidence_refs":[],"notes":null,"status":"CANDIDATE_READY"},"created_at":"2026-08-30T11:15:41.3895071+09:00","cycle_id":"cyc_3","envelope_id":"env_dsp_23_attempt_2","from_role":"builder","kind":"builder_result","request_id":"req_15","to_role":"program_control"},{"body":{"action":"DECIDE","authoritative_references":["work-packages/WP-003-B2-S2","decisions/DEC-003-001-wp003-architecture.md"],"authorized_by_decision_id":null,"authorized_finding_ids":[],"base_sha":"6f6088d17983d0ac1ae2f55dd2d5b90ae475bd10","expected_result_kind":"program_control_decision","required_capabilities":["repository_read"],"retry_of_request_id":null,"stop_condition":"real Program Control; durable envelopes; no Browser Relay","target_role":"program_control","target_sha":"927ffd17f6dc308557e51ead9fc351b632775884","work_package_ref":"WP-003-B2-S2"},"created_at":"2026-08-30T02:15:51.237Z","cycle_id":"cyc_3","envelope_id":"env_31","from_role":"dispatcher","kind":"control_request","request_id":"req_30","to_role":"program_control"}],"request_body":{"action":"DECIDE","authoritative_references":["decisions/DEC-003-001-wp003-architecture.md","work-packages/WP-003-B2-S2"],"authorized_by_decision_id":null,"authorized_finding_ids":[],"base_sha":"6f6088d17983d0ac1ae2f55dd2d5b90ae475bd10","expected_result_kind":"program_control_decision","required_capabilities":["repository_read"],"retry_of_request_id":null,"stop_condition":"real Program Control; durable envelopes; no Browser Relay","target_role":"program_control","target_sha":"927ffd17f6dc308557e51ead9fc351b632775884","work_package_ref":"WP-003-B2-S2"},"request_id":"req_30","result_envelope_path":"C:\\Users\\seq\\AppData\\Local\\Temp\\owata-b2-full-N7h28c\\state\\execution\\dsp_34\\result-envelope.json","template_version":"program-control-instruction-v1"}
+
+## program_control_decision contract
+Write JSON matching:
+{
+  "protocol": "owata.handoff/1",
+  "envelope_id": "<unique>",
+  "kind": "program_control_decision",
+  "cycle_id": "cyc_3",
+  "request_id": "req_30",
+  "from_role": "program_control",
+  "to_role": "dispatcher",
+  "created_at": "<ISO-8601>",
+  "body": {
+    "decision": "BUILD" | "REWORK" | "ACCEPT" | "RETRY" | "REDESIGN" | "HUMAN_GATE" | "ABORT",
+    "rationale": string | null,
+    "authorized_finding_ids": string[],
+    "rework_scope": string | null,
+    "human_gate_purpose": string | null,
+    "human_gate_choices": string[] | null,
+    "install_policy": { "on_builder_candidate": "DISPATCH_REVIEW" | "AWAIT_PC" } | null
+  }
+}
+
+Write the envelope JSON to: C:\Users\seq\AppData\Local\Temp\owata-b2-full-N7h28c\state\execution\dsp_34\result-envelope.json
+Do not modify any repository tracked files.

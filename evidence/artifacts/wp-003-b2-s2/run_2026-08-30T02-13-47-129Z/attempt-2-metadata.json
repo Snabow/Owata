@@ -1,0 +1,10 @@
+{
+  "dispatch_id": "dsp_23",
+  "attempt_number": 2,
+  "model_id": "composer-2.5",
+  "prompt_hash": "9d304ac89a3531108eadfccdba6fb20c39714cd5dd8aa68c260b66b3fbe4d201",
+  "template_version": "builder-instruction-v1",
+  "worktree_path": "C:\\Users\\seq\\AppData\\Local\\Temp\\owata-b2-full-N7h28c\\worktrees\\cyc_3__req_15__dsp_23__attempt-2",
+  "action": "BUILD",
+  "checkout_sha": "6f6088d17983d0ac1ae2f55dd2d5b90ae475bd10"
+}

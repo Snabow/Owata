@@ -1,0 +1,754 @@
+{
+  "cycle": {
+    "cycle_id": "cyc_3",
+    "project_id": "prj_1",
+    "work_package_ref": "WP-003-B2-S2",
+    "base_sha": "6f6088d17983d0ac1ae2f55dd2d5b90ae475bd10",
+    "latest_candidate_sha": "927ffd17f6dc308557e51ead9fc351b632775884",
+    "accepted_candidate_sha": null,
+    "state": "RECOVERY_REQUIRED",
+    "current_request_id": "req_30",
+    "policy": {
+      "on_builder_candidate": "AWAIT_PC"
+    },
+    "policy_authorized_by_decision_id": "env_pc_7526c115ae0c405a8118ce2477a18a45",
+    "recovery_target_request_id": null,
+    "recovery_lineage_id": null,
+    "max_dispatch_retries": 4,
+    "recovery_reason": "dispatch_retry_budget_exhausted",
+    "created_at": "2026-08-30T02:13:47.426Z",
+    "updated_at": "2026-08-30T02:17:11.007Z"
+  },
+  "dispatches": [
+    {
+      "dispatch_id": "dsp_19",
+      "cycle_id": "cyc_3",
+      "request_id": "req_15",
+      "attempt_number": 1,
+      "fence_token": "fence_20",
+      "owner": "b2-full-no-relay-canary",
+      "target_role": "builder",
+      "state": "REJECTED",
+      "lease_expires_at": "2026-08-30T02:24:27.993Z",
+      "result_envelope_id": null,
+      "failure_class": "RESULT_INVALID",
+      "failure_detail": "Unsupported protocol",
+      "created_at": "2026-08-30T02:14:27.993Z",
+      "updated_at": "2026-08-30T02:14:43.238Z"
+    },
+    {
+      "dispatch_id": "dsp_34",
+      "cycle_id": "cyc_3",
+      "request_id": "req_30",
+      "attempt_number": 1,
+      "fence_token": "fence_35",
+      "owner": "b2-full-no-relay-canary",
+      "target_role": "program_control",
+      "state": "REJECTED",
+      "lease_expires_at": "2026-08-30T02:26:21.252Z",
+      "result_envelope_id": null,
+      "failure_class": "RESULT_INVALID",
+      "failure_detail": "RETRY requires a durable recovery_target_request_id",
+      "created_at": "2026-08-30T02:15:51.238Z",
+      "updated_at": "2026-08-30T02:16:25.519Z"
+    },
+    {
+      "dispatch_id": "dsp_9",
+      "cycle_id": "cyc_3",
+      "request_id": "req_5",
+      "attempt_number": 1,
+      "fence_token": "fence_10",
+      "owner": "b2-full-no-relay-canary",
+      "target_role": "program_control",
+      "state": "ACCEPTED",
+      "lease_expires_at": "2026-08-30T02:24:19.840Z",
+      "result_envelope_id": "env_pc_7526c115ae0c405a8118ce2477a18a45",
+      "failure_class": null,
+      "failure_detail": null,
+      "created_at": "2026-08-30T02:13:49.832Z",
+      "updated_at": "2026-08-30T02:14:27.987Z"
+    },
+    {
+      "dispatch_id": "dsp_23",
+      "cycle_id": "cyc_3",
+      "request_id": "req_15",
+      "attempt_number": 2,
+      "fence_token": "fence_24",
+      "owner": "b2-full-no-relay-canary",
+      "target_role": "builder",
+      "state": "ACCEPTED",
+      "lease_expires_at": "2026-08-30T02:25:43.288Z",
+      "result_envelope_id": "env_dsp_23_attempt_2",
+      "failure_class": null,
+      "failure_detail": null,
+      "created_at": "2026-08-30T02:14:43.240Z",
+      "updated_at": "2026-08-30T02:15:51.235Z"
+    },
+    {
+      "dispatch_id": "dsp_41",
+      "cycle_id": "cyc_3",
+      "request_id": "req_30",
+      "attempt_number": 2,
+      "fence_token": "fence_42",
+      "owner": "b2-full-no-relay-canary",
+      "target_role": "program_control",
+      "state": "REJECTED",
+      "lease_expires_at": "2026-08-30T02:26:55.530Z",
+      "result_envelope_id": null,
+      "failure_class": "RESULT_INVALID",
+      "failure_detail": "RETRY requires a durable recovery_target_request_id",
+      "created_at": "2026-08-30T02:16:25.521Z",
+      "updated_at": "2026-08-30T02:17:10.999Z"
+    },
+    {
+      "dispatch_id": "dsp_48",
+      "cycle_id": "cyc_3",
+      "request_id": "req_30",
+      "attempt_number": 3,
+      "fence_token": "fence_49",
+      "owner": "b2-full-no-relay-canary",
+      "target_role": "program_control",
+      "state": "REJECTED",
+      "lease_expires_at": "2026-08-30T02:27:11.001Z",
+      "result_envelope_id": null,
+      "failure_class": "RUNTIME_ERROR",
+      "failure_detail": "B2-S2 canary budget exceeded before program_control spawn: pc=4/3 builder=2/2 reviewer=0/2 total=6/7",
+      "created_at": "2026-08-30T02:17:11.001Z",
+      "updated_at": "2026-08-30T02:17:11.002Z"
+    },
+    {
+      "dispatch_id": "dsp_52",
+      "cycle_id": "cyc_3",
+      "request_id": "req_30",
+      "attempt_number": 4,
+      "fence_token": "fence_53",
+      "owner": "b2-full-no-relay-canary",
+      "target_role": "program_control",
+      "state": "REJECTED",
+      "lease_expires_at": "2026-08-30T02:27:11.004Z",
+      "result_envelope_id": null,
+      "failure_class": "RUNTIME_ERROR",
+      "failure_detail": "B2-S2 canary budget exceeded before program_control spawn: pc=4/3 builder=2/2 reviewer=0/2 total=6/7",
+      "created_at": "2026-08-30T02:17:11.004Z",
+      "updated_at": "2026-08-30T02:17:11.006Z"
+    }
+  ],
+  "envelopes": [
+    {
+      "protocol": "owata.handoff/1",
+      "envelope_id": "env_6",
+      "kind": "control_request",
+      "cycle_id": "cyc_3",
+      "request_id": "req_5",
+      "from_role": "dispatcher",
+      "to_role": "program_control",
+      "created_at": "2026-08-30T02:13:49.829Z",
+      "body": {
+        "action": "DECIDE",
+        "target_role": "program_control",
+        "work_package_ref": "WP-003-B2-S2",
+        "base_sha": "6f6088d17983d0ac1ae2f55dd2d5b90ae475bd10",
+        "target_sha": null,
+        "authoritative_references": [
+          "work-packages/WP-003-B2-S2",
+          "decisions/DEC-003-001-wp003-architecture.md"
+        ],
+        "required_capabilities": [
+          "repository_read"
+        ],
+        "expected_result_kind": "program_control_decision",
+        "stop_condition": "real Program Control; durable envelopes; no Browser Relay",
+        "authorized_by_decision_id": null,
+        "authorized_finding_ids": [],
+        "retry_of_request_id": null
+      }
+    },
+    {
+      "protocol": "owata.handoff/1",
+      "envelope_id": "env_pc_7526c115ae0c405a8118ce2477a18a45",
+      "kind": "program_control_decision",
+      "cycle_id": "cyc_3",
+      "request_id": "req_5",
+      "from_role": "program_control",
+      "to_role": "dispatcher",
+      "created_at": "2026-08-30T11:14:14.1509430+09:00",
+      "body": {
+        "decision": "BUILD",
+        "rationale": "No candidate exists and the durable control request asks for the next action against the specified base and work package; authorize the initial build.",
+        "authorized_finding_ids": [],
+        "rework_scope": null,
+        "human_gate_purpose": null,
+        "human_gate_choices": null,
+        "install_policy": {
+          "on_builder_candidate": "AWAIT_PC"
+        }
+      }
+    },
+    {
+      "protocol": "owata.handoff/1",
+      "envelope_id": "env_16",
+      "kind": "control_request",
+      "cycle_id": "cyc_3",
+      "request_id": "req_15",
+      "from_role": "program_control",
+      "to_role": "builder",
+      "created_at": "2026-08-30T02:14:27.990Z",
+      "body": {
+        "action": "BUILD",
+        "target_role": "builder",
+        "work_package_ref": "WP-003-B2-S2",
+        "base_sha": "6f6088d17983d0ac1ae2f55dd2d5b90ae475bd10",
+        "target_sha": "6f6088d17983d0ac1ae2f55dd2d5b90ae475bd10",
+        "authoritative_references": [
+          "work-packages/WP-003-B2-S2",
+          "decisions/DEC-003-001-wp003-architecture.md"
+        ],
+        "required_capabilities": [
+          "repository_read",
+          "repository_write",
+          "exact_checkout",
+          "command_execution"
+        ],
+        "expected_result_kind": "builder_result",
+        "stop_condition": "bounded fake adapter; no real provider",
+        "authorized_by_decision_id": "env_pc_7526c115ae0c405a8118ce2477a18a45",
+        "authorized_finding_ids": [],
+        "retry_of_request_id": null
+      }
+    },
+    {
+      "protocol": "owata.handoff/1",
+      "envelope_id": "env_dsp_23_attempt_2",
+      "kind": "builder_result",
+      "cycle_id": "cyc_3",
+      "request_id": "req_15",
+      "from_role": "builder",
+      "to_role": "program_control",
+      "created_at": "2026-08-30T11:15:41.3895071+09:00",
+      "body": {
+        "status": "CANDIDATE_READY",
+        "candidate_sha": "927ffd17f6dc308557e51ead9fc351b632775884",
+        "evidence_refs": [],
+        "notes": null
+      }
+    },
+    {
+      "protocol": "owata.handoff/1",
+      "envelope_id": "env_31",
+      "kind": "control_request",
+      "cycle_id": "cyc_3",
+      "request_id": "req_30",
+      "from_role": "dispatcher",
+      "to_role": "program_control",
+      "created_at": "2026-08-30T02:15:51.237Z",
+      "body": {
+        "action": "DECIDE",
+        "target_role": "program_control",
+        "work_package_ref": "WP-003-B2-S2",
+        "base_sha": "6f6088d17983d0ac1ae2f55dd2d5b90ae475bd10",
+        "target_sha": "927ffd17f6dc308557e51ead9fc351b632775884",
+        "authoritative_references": [
+          "work-packages/WP-003-B2-S2",
+          "decisions/DEC-003-001-wp003-architecture.md"
+        ],
+        "required_capabilities": [
+          "repository_read"
+        ],
+        "expected_result_kind": "program_control_decision",
+        "stop_condition": "real Program Control; durable envelopes; no Browser Relay",
+        "authorized_by_decision_id": null,
+        "authorized_finding_ids": [],
+        "retry_of_request_id": null
+      }
+    }
+  ],
+  "human_gates": [],
+  "human_gates_count": 0,
+  "events": [
+    {
+      "event_id": "evt_2",
+      "event_seq": 1,
+      "ts": "2026-08-30T02:13:47.424Z",
+      "event_type": "project.created",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "name": "b2-full-no-relay-canary",
+        "state": "ACTIVE"
+      },
+      "jsonl_flushed": 1
+    },
+    {
+      "event_id": "evt_4",
+      "event_seq": 2,
+      "ts": "2026-08-30T02:13:47.426Z",
+      "event_type": "cycle.created",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "work_package_ref": "WP-003-B2-S2",
+        "policy": {
+          "on_builder_candidate": "AWAIT_PC"
+        }
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_7",
+      "event_seq": 3,
+      "ts": "2026-08-30T02:13:49.829Z",
+      "event_type": "cycle.request_persisted",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_5",
+        "action": "DECIDE",
+        "target_role": "program_control",
+        "recovery_target_request_id": null
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_8",
+      "event_seq": 4,
+      "ts": "2026-08-30T02:13:49.830Z",
+      "event_type": "cycle.transitioned",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "from": "AWAITING_PC",
+        "to": "DISPATCHING_PC",
+        "current_request_id": "req_5"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_11",
+      "event_seq": 5,
+      "ts": "2026-08-30T02:13:49.832Z",
+      "event_type": "cycle.dispatch_claimed",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_5",
+        "dispatch_id": "dsp_9",
+        "attempt_number": 1,
+        "owner": "b2-full-no-relay-canary",
+        "fence_token": "fence_10"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_12",
+      "event_seq": 6,
+      "ts": "2026-08-30T02:14:19.840Z",
+      "event_type": "cycle.lease_renewed",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_5",
+        "dispatch_id": "dsp_9",
+        "attempt_number": 1,
+        "lease_expires_at": "2026-08-30T02:24:19.840Z"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_13",
+      "event_seq": 7,
+      "ts": "2026-08-30T02:14:27.987Z",
+      "event_type": "cycle.result_accepted",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_5",
+        "dispatch_id": "dsp_9",
+        "envelope_id": "env_pc_7526c115ae0c405a8118ce2477a18a45",
+        "kind": "program_control_decision"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_14",
+      "event_seq": 8,
+      "ts": "2026-08-30T02:14:27.987Z",
+      "event_type": "cycle.decision_persisted",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "envelope_id": "env_pc_7526c115ae0c405a8118ce2477a18a45",
+        "decision": "BUILD",
+        "dispatch_id": "dsp_9"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_17",
+      "event_seq": 9,
+      "ts": "2026-08-30T02:14:27.990Z",
+      "event_type": "cycle.request_persisted",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_15",
+        "action": "BUILD",
+        "authorized_by_decision_id": "env_pc_7526c115ae0c405a8118ce2477a18a45",
+        "authorized_finding_ids": []
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_18",
+      "event_seq": 10,
+      "ts": "2026-08-30T02:14:27.990Z",
+      "event_type": "cycle.transitioned",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "from": "DISPATCHING_PC",
+        "to": "DISPATCHING_BUILD",
+        "current_request_id": "req_15",
+        "recovery_reason": null,
+        "recovery_target_request_id": null,
+        "recovery_lineage_id": null
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_21",
+      "event_seq": 11,
+      "ts": "2026-08-30T02:14:27.993Z",
+      "event_type": "cycle.dispatch_claimed",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_15",
+        "dispatch_id": "dsp_19",
+        "attempt_number": 1,
+        "owner": "b2-full-no-relay-canary",
+        "fence_token": "fence_20"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_22",
+      "event_seq": 12,
+      "ts": "2026-08-30T02:14:43.238Z",
+      "event_type": "cycle.result_rejected",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_15",
+        "dispatch_id": "dsp_19",
+        "failure_class": "RESULT_INVALID",
+        "detail": "Unsupported protocol"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_25",
+      "event_seq": 13,
+      "ts": "2026-08-30T02:14:43.240Z",
+      "event_type": "cycle.dispatch_claimed",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_15",
+        "dispatch_id": "dsp_23",
+        "attempt_number": 2,
+        "owner": "b2-full-no-relay-canary",
+        "fence_token": "fence_24"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_26",
+      "event_seq": 14,
+      "ts": "2026-08-30T02:15:13.267Z",
+      "event_type": "cycle.lease_renewed",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_15",
+        "dispatch_id": "dsp_23",
+        "attempt_number": 2,
+        "lease_expires_at": "2026-08-30T02:25:13.267Z"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_27",
+      "event_seq": 15,
+      "ts": "2026-08-30T02:15:43.288Z",
+      "event_type": "cycle.lease_renewed",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_15",
+        "dispatch_id": "dsp_23",
+        "attempt_number": 2,
+        "lease_expires_at": "2026-08-30T02:25:43.288Z"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_28",
+      "event_seq": 16,
+      "ts": "2026-08-30T02:15:51.235Z",
+      "event_type": "cycle.result_accepted",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_15",
+        "dispatch_id": "dsp_23",
+        "envelope_id": "env_dsp_23_attempt_2",
+        "kind": "builder_result"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_29",
+      "event_seq": 17,
+      "ts": "2026-08-30T02:15:51.236Z",
+      "event_type": "cycle.transitioned",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "from": "DISPATCHING_BUILD",
+        "to": "AWAITING_PC",
+        "latest_candidate_sha": "927ffd17f6dc308557e51ead9fc351b632775884",
+        "current_request_id": null
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_32",
+      "event_seq": 18,
+      "ts": "2026-08-30T02:15:51.237Z",
+      "event_type": "cycle.request_persisted",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_30",
+        "action": "DECIDE",
+        "target_role": "program_control",
+        "recovery_target_request_id": null
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_33",
+      "event_seq": 19,
+      "ts": "2026-08-30T02:15:51.237Z",
+      "event_type": "cycle.transitioned",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "from": "AWAITING_PC",
+        "to": "DISPATCHING_PC",
+        "current_request_id": "req_30"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_36",
+      "event_seq": 20,
+      "ts": "2026-08-30T02:15:51.238Z",
+      "event_type": "cycle.dispatch_claimed",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_30",
+        "dispatch_id": "dsp_34",
+        "attempt_number": 1,
+        "owner": "b2-full-no-relay-canary",
+        "fence_token": "fence_35"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_37",
+      "event_seq": 21,
+      "ts": "2026-08-30T02:16:21.252Z",
+      "event_type": "cycle.lease_renewed",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_30",
+        "dispatch_id": "dsp_34",
+        "attempt_number": 1,
+        "lease_expires_at": "2026-08-30T02:26:21.252Z"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_40",
+      "event_seq": 22,
+      "ts": "2026-08-30T02:16:25.519Z",
+      "event_type": "cycle.result_rejected",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_30",
+        "dispatch_id": "dsp_34",
+        "failure_class": "RESULT_INVALID",
+        "detail": "RETRY requires a durable recovery_target_request_id"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_43",
+      "event_seq": 23,
+      "ts": "2026-08-30T02:16:25.521Z",
+      "event_type": "cycle.dispatch_claimed",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_30",
+        "dispatch_id": "dsp_41",
+        "attempt_number": 2,
+        "owner": "b2-full-no-relay-canary",
+        "fence_token": "fence_42"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_44",
+      "event_seq": 24,
+      "ts": "2026-08-30T02:16:55.530Z",
+      "event_type": "cycle.lease_renewed",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_30",
+        "dispatch_id": "dsp_41",
+        "attempt_number": 2,
+        "lease_expires_at": "2026-08-30T02:26:55.530Z"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_47",
+      "event_seq": 25,
+      "ts": "2026-08-30T02:17:10.999Z",
+      "event_type": "cycle.result_rejected",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_30",
+        "dispatch_id": "dsp_41",
+        "failure_class": "RESULT_INVALID",
+        "detail": "RETRY requires a durable recovery_target_request_id"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_50",
+      "event_seq": 26,
+      "ts": "2026-08-30T02:17:11.001Z",
+      "event_type": "cycle.dispatch_claimed",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_30",
+        "dispatch_id": "dsp_48",
+        "attempt_number": 3,
+        "owner": "b2-full-no-relay-canary",
+        "fence_token": "fence_49"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_51",
+      "event_seq": 27,
+      "ts": "2026-08-30T02:17:11.002Z",
+      "event_type": "cycle.result_rejected",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_30",
+        "dispatch_id": "dsp_48",
+        "failure_class": "RUNTIME_ERROR",
+        "detail": "B2-S2 canary budget exceeded before program_control spawn: pc=4/3 builder=2/2 reviewer=0/2 total=6/7"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_54",
+      "event_seq": 28,
+      "ts": "2026-08-30T02:17:11.004Z",
+      "event_type": "cycle.dispatch_claimed",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_30",
+        "dispatch_id": "dsp_52",
+        "attempt_number": 4,
+        "owner": "b2-full-no-relay-canary",
+        "fence_token": "fence_53"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_55",
+      "event_seq": 29,
+      "ts": "2026-08-30T02:17:11.006Z",
+      "event_type": "cycle.result_rejected",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_30",
+        "dispatch_id": "dsp_52",
+        "failure_class": "RUNTIME_ERROR",
+        "detail": "B2-S2 canary budget exceeded before program_control spawn: pc=4/3 builder=2/2 reviewer=0/2 total=6/7"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_56",
+      "event_seq": 30,
+      "ts": "2026-08-30T02:17:11.007Z",
+      "event_type": "cycle.transitioned",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "from": "DISPATCHING_PC",
+        "to": "RECOVERY_REQUIRED",
+        "recovery_reason": "dispatch_retry_budget_exhausted",
+        "recovery_target_request_id": null,
+        "recovery_lineage_id": null,
+        "note": "pc_or_non_role_recovery_preserved_lineage"
+      },
+      "jsonl_flushed": 0
+    }
+  ]
+}

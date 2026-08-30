@@ -1,0 +1,52 @@
+{
+  "run_id": "run_2026-08-30T02-13-47-129Z",
+  "status": "FAIL",
+  "slice": "B2-S2_REAL_PROGRAM_CONTROL_FULL_NO_RELAY",
+  "owata_source_sha": "ab14b4fb5c5c7ae4c2cf5248a800b0d25bf282f0",
+  "owata_source_tree_sha": "d060b84e104da5169333f979c5c2943a3a397d36",
+  "source_tracked_clean": true,
+  "cycle_id": "cyc_3",
+  "base_sha": "6f6088d17983d0ac1ae2f55dd2d5b90ae475bd10",
+  "candidate_shas": [
+    "927ffd17f6dc308557e51ead9fc351b632775884"
+  ],
+  "accepted_candidate_sha": null,
+  "pc_decisions": [
+    "BUILD"
+  ],
+  "reviewer_verdicts": [],
+  "builder_invocations": 2,
+  "reviewer_invocations": 0,
+  "pc_invocations": 3,
+  "human_continuity_actions": 0,
+  "browser_relay_used": false,
+  "pc_binding": "codex-cli-program-control",
+  "pc_binding_version": "1",
+  "builder_binding": "cursor-cli",
+  "reviewer_binding": "codex-cli",
+  "pc_runtime_version": "codex-cli 0.150.1",
+  "builder_runtime_version": "2026.08.25-3e8eec8",
+  "reviewer_runtime_version": "codex-cli 0.150.1",
+  "candidate_resolution_check": "PASS",
+  "artifact_hashes": {
+    "durable-state.json": "72a818c7b1a6e488a8d4a3b8bfb6f2edda051e27a70e6243157063017869b8d6",
+    "cycle-summary.json": "561cbce7e58d161c31910fb9ed933b4c152d507a06c2106ff927ec78d68187ce",
+    "attempt-1-instruction.txt": "45579f13d02e8e22b3c4a7737cb0f3bb2e2336e2db7b2bdeb2591bd9d7dad4cb",
+    "attempt-1-metadata.json": "7479675d836d153e489fac73bad79b816f4b05e8c44db8bb7f63c936bab20c61",
+    "attempt-2-instruction.txt": "9d304ac89a3531108eadfccdba6fb20c39714cd5dd8aa68c260b66b3fbe4d201",
+    "attempt-2-metadata.json": "18b9c66929af09afcf97d70cb4c801f2af77f2d94a12fc9e8d8b0f3d346100dd",
+    "attempt-2-result-envelope.json": "1f27ab6783e9329f7c9b910de7fa3d770e03ccb67ed69dea3bb376898340817a",
+    "attempt-3-instruction.txt": "8db2d0764f5b67d7c7e8a661ed0dae3647ef34a73cc473a8e34ce007e7dfd0e4",
+    "attempt-3-metadata.json": "004400b392f4a0ed36c73df822b7a7691050891f78d7d86d73f9ee81791e2af0",
+    "attempt-3-result-envelope.json": "dcf12c4668276a41e7e24e76edf813e7fd0a058e474f8b4d454473daed452e5d",
+    "attempt-4-instruction.txt": "676365e9c0c05be81dcec1284844840248c5a42842355a162f56f9dc7deb69b9",
+    "attempt-4-metadata.json": "226da04fddea9a1af48fa20332618af6f9481dd73268950f6b91e959dcc2449e",
+    "attempt-4-result-envelope.json": "df59bfb5a96744de2e89d0df41d817227b1591765a2eb919ca8ad597d842a933",
+    "attempt-5-instruction.txt": "f6ffb63aea1089431f45c3809ad5035e8c574e9aa13fa39d573af7c881f09bc5",
+    "attempt-5-metadata.json": "cf3bc3c70c2b2cfc15d930429fbc89e7a3ff4819a8563beb4b53319ddbf81d6b",
+    "attempt-5-result-envelope.json": "2429324cd6a2e3c07681d05d2d3d6eeafba21ea894264f6c2044986b637cc164",
+    "task-repo.bundle": "ae17e604202948d4f1e47a5e34e960655fc6803bc4489e0b99e7d5888dfa206b"
+  },
+  "evidence_rel": "evidence/artifacts/wp-003-b2-s2/run_2026-08-30T02-13-47-129Z",
+  "manifest_content_sha256": "a9c835deeefe5b2c7ce9f3a2f0dd6b64a71dd7ca7ba3218571929684cc3a7323"
+}
