@@ -4,7 +4,7 @@
 **Status:** ACCEPTED
 **Date:** 2026-08-30
 **Work Package:** WP-004-S6
-**Authority:** Program Control (OWATA-REQ-0095)
+**Authority:** Program Control (OWATA-REQ-0095; wording repair OWATA-REQ-0097)
 **Related:** `decisions/DEC-004-002-availability-boundary.md`, `decisions/DEC-004-003-selection-boundary.md`, `decisions/DEC-004-005-routed-dispatch-cutover.md`
 
 Builder MUST NOT expand or change this Decision beyond recording the Program Control adjudications below.
@@ -39,11 +39,13 @@ QuotaProbeResult { exhausted: boolean; detail?: string }
 
 Do **not** invent `remaining_tokens`, prices, plans, rate windows, or comparable numeric budgets in S6.
 
-`UNKNOWN` is fail-closed for any later quota-aware consumer: never treated as `AVAILABLE`.
+`UNKNOWN` is a **distinct factual quota state**. S6 MUST NOT normalize or reclassify `UNKNOWN` as `AVAILABLE`, `EXHAUSTED`, unlimited, or zero quota.
+
+S6 does **not** decide whether `UNKNOWN` is routable. S6 does **not** decide whether a future Router should retain the binding, skip it, probe again, block, retry, escalate, or fail over. Those behaviors belong to a future quota routing policy slice (deferred).
 
 ### A-011 — Deterministic assessment + observation uniqueness
 
-`assessQuota(bindings, observations)` partitions input bindings into `available` / `exhausted` / `unknown`, preserving exact input binding order in each partition and in the resolved `observations` list.
+`assessQuota(bindings, observations)` partitions input bindings into `available` / `exhausted` / `unknown`, preserving exact input binding order in each partition and in the resolved `observations` list. Placing observations in the `unknown` partition is **descriptive only** and carries no routing permission or prohibition.
 
 Rules:
 
