@@ -7,6 +7,8 @@ export {
   type AvailabilityOverlayStatus,
   type AvailabilityProbeResult,
   type AvailabilityState,
+  type BindingSelectionResult,
+  type BindingSelectionStatus,
   type EligibilityRequest,
   type EligibilityResult,
   type EligibilityStatus,
@@ -26,3 +28,4 @@ export {
   observeBindingAvailability,
   overlayAvailability,
 } from "./availability.js";
+export { selectBinding } from "./selection.js";

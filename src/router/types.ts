@@ -70,6 +70,23 @@ export interface AvailabilityOverlayResult {
   observations: AvailabilityObservation[];
 }
 
+export type BindingSelectionStatus =
+  | "SELECTED"
+  | "NO_ELIGIBLE_BINDING"
+  | "NO_AVAILABLE_BINDING";
+
+export type BindingSelectionResult =
+  | {
+      status: "SELECTED";
+      binding: ProviderBinding;
+    }
+  | {
+      status: "NO_ELIGIBLE_BINDING";
+    }
+  | {
+      status: "NO_AVAILABLE_BINDING";
+    };
+
 export class RouterError extends Error {
   readonly code: string;
 
