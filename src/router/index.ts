@@ -20,6 +20,7 @@ export {
   type ProviderBinding,
   type ProviderRegistry,
   type QuotaAssessmentResult,
+  type QuotaAwareBindingSelectionResult,
   type QuotaObservation,
   type QuotaProbeResult,
   type QuotaState,
@@ -43,6 +44,7 @@ export {
   normalizeQuota,
   observeBindingQuota,
 } from "./quota.js";
+export { selectBindingWithQuota } from "./quota-selection.js";
 export {
   assessCost,
   isValidCostEstimate,

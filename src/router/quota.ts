@@ -7,9 +7,17 @@ import type {
   QuotaState,
 } from "./types.js";
 
+const VALID_QUOTA_STATES = new Set<QuotaState>([
+  "AVAILABLE",
+  "EXHAUSTED",
+  "UNKNOWN",
+]);
+
 /**
  * Normalize a structural quota probe into a provider-neutral quota state.
- * Missing probe → UNKNOWN. No remaining_tokens / prices / plans / rate windows.
+ * Missing probe → UNKNOWN. Non-boolean exhausted → UNKNOWN (no truthy/falsy coerce).
+ * No remaining_tokens / prices / plans / rate windows.
+ * S6 does not decide routability; that is S8 policy (DEC-004-009).
  */
 export function normalizeQuota(
   bindingId: string,
@@ -17,6 +25,17 @@ export function normalizeQuota(
 ): QuotaObservation {
   if (probeResult == null) {
     return { binding_id: bindingId, state: "UNKNOWN" };
+  }
+  if (typeof probeResult.exhausted !== "boolean") {
+    const out: QuotaObservation = {
+      binding_id: bindingId,
+      state: "UNKNOWN",
+      detail: "malformed quota probe exhausted",
+    };
+    if (probeResult.detail !== undefined) {
+      out.detail = probeResult.detail;
+    }
+    return out;
   }
   const state: QuotaState = probeResult.exhausted ? "EXHAUSTED" : "AVAILABLE";
   const out: QuotaObservation = { binding_id: bindingId, state };
@@ -46,11 +65,28 @@ export async function observeBindingQuota(
   }
 }
 
-function indexObservations(
+function assertNormalizedObservation(obs: QuotaObservation): void {
+  const state = (obs as { state?: unknown }).state;
+  if (typeof state !== "string" || !VALID_QUOTA_STATES.has(state as QuotaState)) {
+    throw new RouterError(
+      "QUOTA_INVALID",
+      `invalid quota observation state for binding_id ${obs.binding_id}`,
+    );
+  }
+}
+
+function indexRelevantObservations(
+  bindings: readonly ProviderBinding[],
   observations: readonly QuotaObservation[],
 ): Map<string, QuotaObservation> {
+  const owned = new Set(bindings.map((b) => b.binding_id));
   const byId = new Map<string, QuotaObservation>();
   for (const obs of observations) {
+    // Unrelated observations are outside assessment ownership: ignore completely.
+    if (!owned.has(obs.binding_id)) {
+      continue;
+    }
+    assertNormalizedObservation(obs);
     if (byId.has(obs.binding_id)) {
       throw new RouterError(
         "QUOTA_INVALID",
@@ -72,15 +108,15 @@ function observationFor(
 /**
  * Partition bindings by quota observation.
  * Preserves input binding order in each partition.
- * Missing observation is UNKNOWN (fail-closed for quota-aware consumers).
- * Duplicate binding_id observations fail closed (QUOTA_INVALID).
- * Observations for binding_ids absent from `bindings` are ignored (cannot inject).
+ * Missing observation is UNKNOWN (descriptive; routability is S8 policy).
+ * Unrelated observations ignored before validation (cannot inject).
+ * Duplicate / invalid relevant normalized observations fail closed (QUOTA_INVALID).
  */
 export function assessQuota(
   bindings: readonly ProviderBinding[],
   observations: readonly QuotaObservation[],
 ): QuotaAssessmentResult {
-  const byId = indexObservations(observations);
+  const byId = indexRelevantObservations(bindings, observations);
 
   const resolved: QuotaObservation[] = [];
   const available: ProviderBinding[] = [];

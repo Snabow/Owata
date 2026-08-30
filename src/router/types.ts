@@ -87,6 +87,23 @@ export type BindingSelectionResult =
       status: "NO_AVAILABLE_BINDING";
     };
 
+/** Pure quota-aware selection result (S8). SELECTED exposes distinct quota_state. */
+export type QuotaAwareBindingSelectionResult =
+  | {
+      status: "SELECTED";
+      binding: ProviderBinding;
+      quota_state: "AVAILABLE" | "UNKNOWN";
+    }
+  | {
+      status: "NO_ELIGIBLE_BINDING";
+    }
+  | {
+      status: "NO_AVAILABLE_BINDING";
+    }
+  | {
+      status: "NO_QUOTA_ROUTABLE_BINDING";
+    };
+
 /** Provider-neutral quota probe: exhausted flag only (no remaining_tokens / prices / plans). */
 export interface QuotaProbeResult {
   exhausted: boolean;

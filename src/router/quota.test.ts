@@ -173,17 +173,45 @@ test("unrelated observations are ignored and cannot inject bindings", () => {
   assert.equal(result.observations[0]?.binding_id, "a");
 });
 
-test("duplicate unrelated observations still fail closed", () => {
-  const a = binding({ binding_id: "a", priority: 1 });
+test("malformed non-boolean exhausted -> UNKNOWN", () => {
+  const obs = normalizeQuota("b1", {
+    exhausted: "yes" as unknown as boolean,
+  });
+  assert.equal(obs.state, "UNKNOWN");
+});
+
+test("relevant invalid normalized state -> QUOTA_INVALID", () => {
+  const b = binding({ binding_id: "b1" });
+  const bad = {
+    binding_id: "b1",
+    state: "CREDENTIAL_UNAVAILABLE",
+  } as unknown as QuotaObservation;
   assert.throws(
-    () =>
-      assessQuota([a], [
-        { binding_id: "x", state: "AVAILABLE" },
-        { binding_id: "x", state: "EXHAUSTED" },
-      ]),
+    () => assessQuota([b], [bad]),
     (err: unknown) =>
       err instanceof RouterError && err.code === "QUOTA_INVALID",
   );
+});
+
+test("unrelated invalid state / duplicates ignored", () => {
+  const a = binding({ binding_id: "a", priority: 1 });
+  const result = assessQuota(
+    [a],
+    [
+      {
+        binding_id: "x",
+        state: "CREDENTIAL_UNAVAILABLE",
+      } as unknown as QuotaObservation,
+      { binding_id: "x", state: "AVAILABLE" },
+      { binding_id: "x", state: "EXHAUSTED" },
+      { binding_id: "a", state: "AVAILABLE" },
+    ],
+  );
+  assert.deepEqual(
+    result.available.map((x) => x.binding_id),
+    ["a"],
+  );
+  assert.equal(result.observations.length, 1);
 });
 
 test("assessQuota does not mutate input bindings", () => {
