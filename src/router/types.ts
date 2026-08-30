@@ -39,6 +39,37 @@ export interface EligibilityResult {
   bindings: ProviderBinding[];
 }
 
+/** Provider-neutral probe shape shared across role bindings. */
+export interface AvailabilityProbeResult {
+  ok: boolean;
+  authReady: boolean;
+  detail?: string;
+}
+
+export type AvailabilityState =
+  | "AVAILABLE"
+  | "CREDENTIAL_UNAVAILABLE"
+  | "AGENT_UNAVAILABLE"
+  | "UNKNOWN";
+
+export interface AvailabilityObservation {
+  binding_id: string;
+  state: AvailabilityState;
+  detail?: string;
+}
+
+export type AvailabilityOverlayStatus =
+  | "AVAILABLE"
+  | "NO_ELIGIBLE_BINDING"
+  | "NO_AVAILABLE_BINDING";
+
+export interface AvailabilityOverlayResult {
+  status: AvailabilityOverlayStatus;
+  bindings: ProviderBinding[];
+  /** Per eligible binding observation used for this evaluation (ephemeral). */
+  observations: AvailabilityObservation[];
+}
+
 export class RouterError extends Error {
   readonly code: string;
 
