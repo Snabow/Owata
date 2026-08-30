@@ -1,0 +1,33 @@
+{
+  "run_id": "run_2026-08-30T00-31-13-351Z",
+  "status": "B2_S1_CANARY_PASS",
+  "owata_source_sha": "92556fe8afffbc488451318863e717963c2cce89",
+  "candidate_sha": "6551e7cba907e5db64bbc7ccaf03060be717c038",
+  "request_id": "req_24",
+  "cycle_id": "cyc_3",
+  "reviewer_binding": "codex-cli",
+  "reviewer_binding_version": "1",
+  "runtime_version": "codex-cli 0.150.1",
+  "prompt_hash": "c4fc606189bd24cd4389e1de860019e849a57a4005cfdbe4ef1e820d6c12f366",
+  "template_version": "reviewer-instruction-v1",
+  "verdict": "REWORK",
+  "finding_count": 1,
+  "human_continuity_actions": 0,
+  "real_reviewer_invocations": 1,
+  "candidate_unchanged": true,
+  "workspace_clean": true,
+  "candidate_resolution_check": "PASS",
+  "artifact_hashes": {
+    "durable-state.json": "af3701af45b9448567fa0d8c54240c525f77fbfdf6006f87976f20e4fb6b1d4e",
+    "canonical-review-request.json": "fa73accafc4eea5cfd554cc6fa84147de52b1d142ce17364bc97eaaac905e47e",
+    "reviewer-instruction.txt": "c4fc606189bd24cd4389e1de860019e849a57a4005cfdbe4ef1e820d6c12f366",
+    "reviewer-metadata.json": "698cfc3357488f1d6461b72873e4d8c79c866cbdd667f43e510efab75076659e",
+    "reviewer-result-envelope.json": "cc483fc884c57cb02c7007e375e3fba68ee4fae6172ddc0020a1fa3cc9d8156b",
+    "findings.json": "99c4378bd708474799f2d8d057120f19f6d3c9e303a0d17f6ce04db63c0343c7",
+    "immutability-proof.json": "1883a5dcebc7ef546ad389a315fd0b7474251ed1d2f42c1ffcf8b741d74dd3a4",
+    "candidate-resolution-proof.json": "166e95428c604edffffaa41f0cc56606c77189efac2f6310b46725fa19003380",
+    "task-repo.bundle": "cb0822ff6debd53fb8e85ae1580261dc3da4f880cfe29b05bc8750fda4e5a2b3"
+  },
+  "evidence_rel": "evidence/artifacts/wp-003-b2-s1/run_2026-08-30T00-31-13-351Z",
+  "manifest_content_sha256": "9d7638f07a37c5980c8d5e5c286c8a1b9139e54ba13727079e87f36d263a6ac6"
+}

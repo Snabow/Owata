@@ -1,0 +1,508 @@
+{
+  "cycle": {
+    "cycle_id": "cyc_3",
+    "project_id": "prj_1",
+    "work_package_ref": "WP-003-B2-S1",
+    "base_sha": "6551e7cba907e5db64bbc7ccaf03060be717c038",
+    "latest_candidate_sha": "6551e7cba907e5db64bbc7ccaf03060be717c038",
+    "accepted_candidate_sha": null,
+    "state": "AWAITING_PC",
+    "current_request_id": null,
+    "policy": {
+      "on_builder_candidate": "DISPATCH_REVIEW"
+    },
+    "policy_authorized_by_decision_id": "env_12",
+    "recovery_target_request_id": null,
+    "recovery_lineage_id": null,
+    "max_dispatch_retries": 2,
+    "recovery_reason": null,
+    "created_at": "2026-08-30T00:31:13.794Z",
+    "updated_at": "2026-08-30T00:32:13.701Z"
+  },
+  "dispatches": [
+    {
+      "dispatch_id": "dsp_19",
+      "cycle_id": "cyc_3",
+      "request_id": "req_15",
+      "attempt_number": 1,
+      "fence_token": "fence_20",
+      "owner": "b2-reviewer-canary",
+      "target_role": "builder",
+      "state": "ACCEPTED",
+      "lease_expires_at": "2026-08-30T00:41:14.012Z",
+      "result_envelope_id": "env_22",
+      "failure_class": null,
+      "failure_detail": null,
+      "created_at": "2026-08-30T00:31:14.012Z",
+      "updated_at": "2026-08-30T00:31:14.014Z"
+    },
+    {
+      "dispatch_id": "dsp_28",
+      "cycle_id": "cyc_3",
+      "request_id": "req_24",
+      "attempt_number": 1,
+      "fence_token": "fence_29",
+      "owner": "b2-reviewer-canary",
+      "target_role": "reviewer",
+      "state": "ACCEPTED",
+      "lease_expires_at": "2026-08-30T00:41:44.029Z",
+      "result_envelope_id": "d318e18c-7f5d-45e0-8ba3-688a126a34fe",
+      "failure_class": null,
+      "failure_detail": null,
+      "created_at": "2026-08-30T00:31:14.017Z",
+      "updated_at": "2026-08-30T00:32:13.700Z"
+    },
+    {
+      "dispatch_id": "dsp_9",
+      "cycle_id": "cyc_3",
+      "request_id": "req_5",
+      "attempt_number": 1,
+      "fence_token": "fence_10",
+      "owner": "b2-reviewer-canary",
+      "target_role": "program_control",
+      "state": "ACCEPTED",
+      "lease_expires_at": "2026-08-30T00:41:14.006Z",
+      "result_envelope_id": "env_12",
+      "failure_class": null,
+      "failure_detail": null,
+      "created_at": "2026-08-30T00:31:14.006Z",
+      "updated_at": "2026-08-30T00:31:14.009Z"
+    }
+  ],
+  "envelopes": [
+    {
+      "protocol": "owata.handoff/1",
+      "envelope_id": "env_6",
+      "kind": "control_request",
+      "cycle_id": "cyc_3",
+      "request_id": "req_5",
+      "from_role": "dispatcher",
+      "to_role": "program_control",
+      "created_at": "2026-08-30T00:31:14.003Z",
+      "body": {
+        "action": "DECIDE",
+        "target_role": "program_control",
+        "work_package_ref": "WP-003-B2-S1",
+        "base_sha": "6551e7cba907e5db64bbc7ccaf03060be717c038",
+        "target_sha": null,
+        "authoritative_references": [
+          "work-packages/WP-003-B2-S1",
+          "decisions/DEC-003-001-wp003-architecture.md"
+        ],
+        "required_capabilities": [
+          "repository_read"
+        ],
+        "expected_result_kind": "program_control_decision",
+        "stop_condition": "bounded fake PC; no real provider",
+        "authorized_by_decision_id": null,
+        "authorized_finding_ids": [],
+        "retry_of_request_id": null
+      }
+    },
+    {
+      "protocol": "owata.handoff/1",
+      "envelope_id": "env_12",
+      "kind": "program_control_decision",
+      "cycle_id": "cyc_3",
+      "request_id": "req_5",
+      "from_role": "program_control",
+      "to_role": "dispatcher",
+      "created_at": "2026-08-30T00:31:14.008Z",
+      "body": {
+        "decision": "BUILD",
+        "rationale": "B2-S1 canary: emit failing candidate then review",
+        "authorized_finding_ids": [],
+        "rework_scope": null,
+        "human_gate_purpose": null,
+        "human_gate_choices": null,
+        "install_policy": {
+          "on_builder_candidate": "DISPATCH_REVIEW"
+        }
+      }
+    },
+    {
+      "protocol": "owata.handoff/1",
+      "envelope_id": "env_16",
+      "kind": "control_request",
+      "cycle_id": "cyc_3",
+      "request_id": "req_15",
+      "from_role": "program_control",
+      "to_role": "builder",
+      "created_at": "2026-08-30T00:31:14.010Z",
+      "body": {
+        "action": "BUILD",
+        "target_role": "builder",
+        "work_package_ref": "WP-003-B2-S1",
+        "base_sha": "6551e7cba907e5db64bbc7ccaf03060be717c038",
+        "target_sha": "6551e7cba907e5db64bbc7ccaf03060be717c038",
+        "authoritative_references": [
+          "work-packages/WP-003-B2-S1",
+          "decisions/DEC-003-001-wp003-architecture.md"
+        ],
+        "required_capabilities": [
+          "repository_read",
+          "repository_write",
+          "exact_checkout",
+          "command_execution"
+        ],
+        "expected_result_kind": "builder_result",
+        "stop_condition": "bounded fake adapter; no real provider",
+        "authorized_by_decision_id": "env_12",
+        "authorized_finding_ids": [],
+        "retry_of_request_id": null
+      }
+    },
+    {
+      "protocol": "owata.handoff/1",
+      "envelope_id": "env_22",
+      "kind": "builder_result",
+      "cycle_id": "cyc_3",
+      "request_id": "req_15",
+      "from_role": "builder",
+      "to_role": "program_control",
+      "created_at": "2026-08-30T00:31:14.014Z",
+      "body": {
+        "status": "CANDIDATE_READY",
+        "candidate_sha": "6551e7cba907e5db64bbc7ccaf03060be717c038",
+        "evidence_refs": [
+          "evidence/fake-1"
+        ],
+        "notes": null
+      }
+    },
+    {
+      "protocol": "owata.handoff/1",
+      "envelope_id": "env_25",
+      "kind": "control_request",
+      "cycle_id": "cyc_3",
+      "request_id": "req_24",
+      "from_role": "dispatcher",
+      "to_role": "reviewer",
+      "created_at": "2026-08-30T00:31:14.015Z",
+      "body": {
+        "action": "REVIEW",
+        "target_role": "reviewer",
+        "work_package_ref": "WP-003-B2-S1",
+        "base_sha": "6551e7cba907e5db64bbc7ccaf03060be717c038",
+        "target_sha": "6551e7cba907e5db64bbc7ccaf03060be717c038",
+        "authoritative_references": [
+          "work-packages/WP-003-B2-S1",
+          "decisions/DEC-003-001-wp003-architecture.md"
+        ],
+        "required_capabilities": [
+          "repository_read",
+          "exact_checkout",
+          "command_execution"
+        ],
+        "expected_result_kind": "reviewer_result",
+        "stop_condition": "exact target_sha required; no Builder chat",
+        "authorized_by_decision_id": "env_12",
+        "authorized_finding_ids": [],
+        "retry_of_request_id": null
+      }
+    },
+    {
+      "protocol": "owata.handoff/1",
+      "envelope_id": "d318e18c-7f5d-45e0-8ba3-688a126a34fe",
+      "kind": "reviewer_result",
+      "cycle_id": "cyc_3",
+      "request_id": "req_24",
+      "from_role": "reviewer",
+      "to_role": "program_control",
+      "created_at": "2026-08-30T09:31:43.726+09:00",
+      "body": {
+        "target_sha": "6551e7cba907e5db64bbc7ccaf03060be717c038",
+        "verdict": "REWORK",
+        "findings": [
+          {
+            "finding_id": "REV-001",
+            "severity": "HIGH",
+            "summary": "The acceptance contract requires STATUS=READY, but STATUS.md contains STATUS=BROKEN."
+          }
+        ],
+        "evidence_refs": [
+          "ACCEPTANCE.md:3",
+          "ACCEPTANCE.md:4",
+          "ACCEPTANCE.md:6",
+          "STATUS.md:1"
+        ]
+      }
+    }
+  ],
+  "human_gates": [],
+  "human_gates_count": 0,
+  "events": [
+    {
+      "event_id": "evt_2",
+      "event_seq": 1,
+      "ts": "2026-08-30T00:31:13.791Z",
+      "event_type": "project.created",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "name": "b2-reviewer-canary",
+        "state": "ACTIVE"
+      },
+      "jsonl_flushed": 1
+    },
+    {
+      "event_id": "evt_4",
+      "event_seq": 2,
+      "ts": "2026-08-30T00:31:13.794Z",
+      "event_type": "cycle.created",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "work_package_ref": "WP-003-B2-S1",
+        "policy": {
+          "on_builder_candidate": "AWAIT_PC"
+        }
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_7",
+      "event_seq": 3,
+      "ts": "2026-08-30T00:31:14.003Z",
+      "event_type": "cycle.request_persisted",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_5",
+        "action": "DECIDE",
+        "target_role": "program_control",
+        "recovery_target_request_id": null
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_8",
+      "event_seq": 4,
+      "ts": "2026-08-30T00:31:14.004Z",
+      "event_type": "cycle.transitioned",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "from": "AWAITING_PC",
+        "to": "DISPATCHING_PC",
+        "current_request_id": "req_5"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_11",
+      "event_seq": 5,
+      "ts": "2026-08-30T00:31:14.006Z",
+      "event_type": "cycle.dispatch_claimed",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_5",
+        "dispatch_id": "dsp_9",
+        "attempt_number": 1,
+        "owner": "b2-reviewer-canary",
+        "fence_token": "fence_10"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_13",
+      "event_seq": 6,
+      "ts": "2026-08-30T00:31:14.009Z",
+      "event_type": "cycle.result_accepted",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_5",
+        "dispatch_id": "dsp_9",
+        "envelope_id": "env_12",
+        "kind": "program_control_decision"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_14",
+      "event_seq": 7,
+      "ts": "2026-08-30T00:31:14.009Z",
+      "event_type": "cycle.decision_persisted",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "envelope_id": "env_12",
+        "decision": "BUILD",
+        "dispatch_id": "dsp_9"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_17",
+      "event_seq": 8,
+      "ts": "2026-08-30T00:31:14.010Z",
+      "event_type": "cycle.request_persisted",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_15",
+        "action": "BUILD",
+        "authorized_by_decision_id": "env_12",
+        "authorized_finding_ids": []
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_18",
+      "event_seq": 9,
+      "ts": "2026-08-30T00:31:14.010Z",
+      "event_type": "cycle.transitioned",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "from": "DISPATCHING_PC",
+        "to": "DISPATCHING_BUILD",
+        "current_request_id": "req_15",
+        "recovery_reason": null,
+        "recovery_target_request_id": null,
+        "recovery_lineage_id": null
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_21",
+      "event_seq": 10,
+      "ts": "2026-08-30T00:31:14.012Z",
+      "event_type": "cycle.dispatch_claimed",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_15",
+        "dispatch_id": "dsp_19",
+        "attempt_number": 1,
+        "owner": "b2-reviewer-canary",
+        "fence_token": "fence_20"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_23",
+      "event_seq": 11,
+      "ts": "2026-08-30T00:31:14.014Z",
+      "event_type": "cycle.result_accepted",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_15",
+        "dispatch_id": "dsp_19",
+        "envelope_id": "env_22",
+        "kind": "builder_result"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_26",
+      "event_seq": 12,
+      "ts": "2026-08-30T00:31:14.015Z",
+      "event_type": "cycle.request_persisted",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_24",
+        "action": "REVIEW",
+        "target_sha": "6551e7cba907e5db64bbc7ccaf03060be717c038",
+        "authorized_by_decision_id": "env_12",
+        "authorized_by_policy": "DISPATCH_REVIEW"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_27",
+      "event_seq": 13,
+      "ts": "2026-08-30T00:31:14.016Z",
+      "event_type": "cycle.transitioned",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "from": "DISPATCHING_BUILD",
+        "to": "DISPATCHING_REVIEW",
+        "current_request_id": "req_24",
+        "latest_candidate_sha": "6551e7cba907e5db64bbc7ccaf03060be717c038"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_30",
+      "event_seq": 14,
+      "ts": "2026-08-30T00:31:14.017Z",
+      "event_type": "cycle.dispatch_claimed",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_24",
+        "dispatch_id": "dsp_28",
+        "attempt_number": 1,
+        "owner": "b2-reviewer-canary",
+        "fence_token": "fence_29"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_31",
+      "event_seq": 15,
+      "ts": "2026-08-30T00:31:44.029Z",
+      "event_type": "cycle.lease_renewed",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_24",
+        "dispatch_id": "dsp_28",
+        "attempt_number": 1,
+        "lease_expires_at": "2026-08-30T00:41:44.029Z"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_32",
+      "event_seq": 16,
+      "ts": "2026-08-30T00:32:13.700Z",
+      "event_type": "cycle.result_accepted",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "request_id": "req_24",
+        "dispatch_id": "dsp_28",
+        "envelope_id": "d318e18c-7f5d-45e0-8ba3-688a126a34fe",
+        "kind": "reviewer_result"
+      },
+      "jsonl_flushed": 0
+    },
+    {
+      "event_id": "evt_33",
+      "event_seq": 17,
+      "ts": "2026-08-30T00:32:13.701Z",
+      "event_type": "cycle.transitioned",
+      "project_id": "prj_1",
+      "work_id": null,
+      "payload": {
+        "cycle_id": "cyc_3",
+        "from": "DISPATCHING_REVIEW",
+        "to": "AWAITING_PC",
+        "current_request_id": null
+      },
+      "jsonl_flushed": 0
+    }
+  ]
+}

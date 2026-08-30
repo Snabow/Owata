@@ -1,0 +1,7 @@
+[
+  {
+    "finding_id": "REV-001",
+    "severity": "HIGH",
+    "summary": "The acceptance contract requires STATUS=READY, but STATUS.md contains STATUS=BROKEN."
+  }
+]

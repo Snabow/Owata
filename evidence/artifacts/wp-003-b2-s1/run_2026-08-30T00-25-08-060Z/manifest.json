@@ -1,0 +1,31 @@
+{
+  "run_id": "run_2026-08-30T00-25-08-060Z",
+  "status": "FAIL",
+  "owata_source_sha": "92556fe8afffbc488451318863e717963c2cce89",
+  "candidate_sha": "361051336595afb21e8c977347ca067d8393319e",
+  "request_id": "req_24",
+  "cycle_id": "cyc_3",
+  "reviewer_binding": "codex-cli",
+  "reviewer_binding_version": "1",
+  "runtime_version": "codex-cli 0.150.1",
+  "prompt_hash": "22a0fd450e5c245e88f6642246172eab5a9a643097af837c424251acfe596675",
+  "template_version": "reviewer-instruction-v1",
+  "verdict": null,
+  "finding_count": 0,
+  "human_continuity_actions": 0,
+  "real_reviewer_invocations": 1,
+  "candidate_unchanged": true,
+  "workspace_clean": true,
+  "candidate_resolution_check": "PASS",
+  "artifact_hashes": {
+    "durable-state.json": "5126ba16644dff7327310b0064ffaaa093c76059ba6b221d48b85c5112333044",
+    "canonical-review-request.json": "bf97f2124ad1cfc084ac425cf2e5742c37d5b17e048309188f2d36e7b345de79",
+    "reviewer-instruction.txt": "22a0fd450e5c245e88f6642246172eab5a9a643097af837c424251acfe596675",
+    "reviewer-metadata.json": "623a322e34838d1da33b2e41b0f78fbc6527e8b3b906ed05b6e68dc0243983b6",
+    "immutability-proof.json": "35af10b0b5d22d55b4338e31dd83f7fde7a5554d9c458fc2458a1675140809c4",
+    "candidate-resolution-proof.json": "4beafa0c9f00398884309ed4584b0698ba3a24630861bd956f02afc3f3570b07",
+    "task-repo.bundle": "a3cc0351f1ab1f6d6428edd101015908251a58f61299c02d64a38cb1d748c8c7"
+  },
+  "evidence_rel": "evidence/artifacts/wp-003-b2-s1/run_2026-08-30T00-25-08-060Z",
+  "manifest_content_sha256": "e1cf3ed7e542a381c01d40ade7849a0d9a8668fcd2a3eb969a1a991b055850ea"
+}
