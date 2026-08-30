@@ -251,3 +251,340 @@ test("canary driver rejects initial BUILD+AWAIT_PC", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("PC RETRY with null recovery_target_request_id is rejected", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "owata-retry-null-"));
+  try {
+    const store = ControlStore.open({ stateDir: dir, idFactory: seqIds() });
+    const handoff = new HandoffStore(store);
+    const project = store.createProject("retry-null");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-003",
+      maxDispatchRetries: 3,
+    });
+    assert.equal(
+      handoff.requireCycle(cycle.cycle_id).recovery_target_request_id,
+      null,
+    );
+    const dispatcher = new Dispatcher(
+      handoff,
+      {
+        programControl: fakePc([
+          {
+            decision: "RETRY",
+            rationale: "not review routing",
+            authorized_finding_ids: [],
+            rework_scope: null,
+            human_gate_purpose: null,
+            human_gate_choices: null,
+            install_policy: null,
+          },
+        ]),
+        builder: fakeBuilderReject(),
+        reviewer: fakeReviewerIdle(),
+      },
+      { owner: "t", leaseMs: 5000 },
+    );
+    const step = await dispatcher.step(cycle.cycle_id);
+    assert.equal(step.action, "result_invalid");
+    assert.match(String(step.detail?.reason ?? ""), /recovery_target_request_id/);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("general non-canary OWATA still permits AWAIT_PC BUILD", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "owata-await-ok-"));
+  try {
+    const store = ControlStore.open({ stateDir: dir, idFactory: seqIds() });
+    const handoff = new HandoffStore(store);
+    const project = store.createProject("await-ok");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-003",
+      baseSha: "c".repeat(40),
+      maxDispatchRetries: 3,
+    });
+    let builderCalls = 0;
+    const builder: BuilderAdapter = {
+      identity: { adapter_id: "fake-builder", role: "builder" },
+      capabilities: () => [
+        "repository_read",
+        "repository_write",
+        "exact_checkout",
+        "command_execution",
+      ],
+      preflight: () => ({ ok: true, missing: [] }),
+      async build(input) {
+        builderCalls += 1;
+        return {
+          protocol: PROTOCOL_V1,
+          envelope_id: `env_b_${builderCalls}`,
+          kind: "builder_result",
+          cycle_id: input.cycle.cycle_id,
+          request_id: input.request.request_id,
+          from_role: "builder",
+          to_role: "program_control",
+          created_at: new Date().toISOString(),
+          body: {
+            status: "CANDIDATE_READY",
+            candidate_sha: "d".repeat(40),
+            evidence_refs: ["e"],
+            notes: null,
+          },
+        };
+      },
+    };
+    const dispatcher = new Dispatcher(
+      handoff,
+      {
+        programControl: fakePc([
+          {
+            decision: "BUILD",
+            rationale: null,
+            authorized_finding_ids: [],
+            rework_scope: null,
+            human_gate_purpose: null,
+            human_gate_choices: null,
+            install_policy: { on_builder_candidate: "AWAIT_PC" },
+          },
+        ]),
+        builder,
+        reviewer: fakeReviewerIdle(),
+      },
+      { owner: "t", leaseMs: 5000 },
+    );
+    await dispatcher.step(cycle.cycle_id);
+    await dispatcher.step(cycle.cycle_id);
+    assert.equal(
+      handoff.requireCycle(cycle.cycle_id).policy.on_builder_candidate,
+      "AWAIT_PC",
+    );
+    assert.equal(builderCalls, 1);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("general Dispatcher still allows multi-attempt retry outside canary", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "owata-gen-retry-"));
+  try {
+    const store = ControlStore.open({ stateDir: dir, idFactory: seqIds() });
+    const handoff = new HandoffStore(store);
+    const project = store.createProject("gen-retry");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-003",
+      maxDispatchRetries: 3,
+    });
+    let builderCalls = 0;
+    const builder: BuilderAdapter = {
+      identity: { adapter_id: "fake-builder", role: "builder" },
+      capabilities: () => [
+        "repository_read",
+        "repository_write",
+        "exact_checkout",
+        "command_execution",
+      ],
+      preflight: () => ({ ok: true, missing: [] }),
+      async build(input) {
+        builderCalls += 1;
+        if (builderCalls === 1) {
+          return { not: "an-envelope" };
+        }
+        return {
+          protocol: PROTOCOL_V1,
+          envelope_id: `env_b_${builderCalls}`,
+          kind: "builder_result",
+          cycle_id: input.cycle.cycle_id,
+          request_id: input.request.request_id,
+          from_role: "builder",
+          to_role: "program_control",
+          created_at: new Date().toISOString(),
+          body: {
+            status: "CANDIDATE_READY",
+            candidate_sha: "h".repeat(40),
+            evidence_refs: ["e"],
+            notes: null,
+          },
+        };
+      },
+    };
+    const dispatcher = new Dispatcher(
+      handoff,
+      {
+        programControl: fakePc([
+          {
+            decision: "BUILD",
+            rationale: null,
+            authorized_finding_ids: [],
+            rework_scope: null,
+            human_gate_purpose: null,
+            human_gate_choices: null,
+            install_policy: { on_builder_candidate: "AWAIT_PC" },
+          },
+        ]),
+        builder,
+        reviewer: fakeReviewerIdle(),
+      },
+      { owner: "t", leaseMs: 5000 },
+    );
+    await dispatcher.step(cycle.cycle_id);
+    const first = await dispatcher.step(cycle.cycle_id);
+    assert.equal(first.action, "result_invalid");
+    assert.equal(builderCalls, 1);
+    const second = await dispatcher.step(cycle.cycle_id);
+    assert.equal(second.action, "builder_result");
+    assert.equal(builderCalls, 2);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("scripted successful canary lineage BUILD→REWORK→PASS→ACCEPT", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "owata-b2s2-lineage-"));
+  try {
+    const store = ControlStore.open({ stateDir: dir, idFactory: seqIds() });
+    const handoff = new HandoffStore(store);
+    const project = store.createProject("lineage");
+    const shaA = "1".repeat(40);
+    const shaB = "2".repeat(40);
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: B2_S2_CANARY_WP_REF,
+      baseSha: "0".repeat(40),
+      maxDispatchRetries: 1,
+    });
+
+    let builderCalls = 0;
+    let reviewerCalls = 0;
+    const builder: BuilderAdapter = {
+      identity: { adapter_id: "fake-builder", role: "builder" },
+      capabilities: () => [
+        "repository_read",
+        "repository_write",
+        "exact_checkout",
+        "command_execution",
+      ],
+      preflight: () => ({ ok: true, missing: [] }),
+      async build(input) {
+        builderCalls += 1;
+        const sha = builderCalls === 1 ? shaA : shaB;
+        return {
+          protocol: PROTOCOL_V1,
+          envelope_id: `env_b_${builderCalls}`,
+          kind: "builder_result",
+          cycle_id: input.cycle.cycle_id,
+          request_id: input.request.request_id,
+          from_role: "builder",
+          to_role: "program_control",
+          created_at: new Date().toISOString(),
+          body: {
+            status: "CANDIDATE_READY",
+            candidate_sha: sha,
+            evidence_refs: [`e${builderCalls}`],
+            notes: null,
+          },
+        };
+      },
+    };
+    const reviewer: ReviewerAdapter = {
+      identity: { adapter_id: "fake-reviewer", role: "reviewer" },
+      capabilities: () => [
+        "repository_read",
+        "exact_checkout",
+        "command_execution",
+      ],
+      preflight: () => ({ ok: true, missing: [] }),
+      async review(input) {
+        reviewerCalls += 1;
+        const rework = reviewerCalls === 1;
+        return {
+          protocol: PROTOCOL_V1,
+          envelope_id: `env_r_${reviewerCalls}`,
+          kind: "reviewer_result",
+          cycle_id: input.cycle.cycle_id,
+          request_id: input.request.request_id,
+          from_role: "reviewer",
+          to_role: "program_control",
+          created_at: new Date().toISOString(),
+          body: {
+            target_sha: input.request.body.target_sha ?? shaA,
+            verdict: rework ? "REWORK" : "PASS",
+            findings: rework
+              ? [
+                  {
+                    finding_id: "F1",
+                    severity: "high",
+                    summary: "broken",
+                  },
+                ]
+              : [],
+            evidence_refs: [`r${reviewerCalls}`],
+          },
+        };
+      },
+    };
+
+    const dispatcher = new Dispatcher(
+      handoff,
+      {
+        programControl: fakePc([
+          {
+            decision: "BUILD",
+            rationale: null,
+            authorized_finding_ids: [],
+            rework_scope: null,
+            human_gate_purpose: null,
+            human_gate_choices: null,
+            install_policy: { on_builder_candidate: "DISPATCH_REVIEW" },
+          },
+          {
+            decision: "REWORK",
+            rationale: null,
+            authorized_finding_ids: ["F1"],
+            rework_scope: "F1",
+            human_gate_purpose: null,
+            human_gate_choices: null,
+            install_policy: null,
+          },
+          {
+            decision: "ACCEPT",
+            rationale: null,
+            authorized_finding_ids: [],
+            rework_scope: null,
+            human_gate_purpose: null,
+            human_gate_choices: null,
+            install_policy: null,
+          },
+        ]),
+        builder,
+        reviewer,
+      },
+      { owner: "canary", leaseMs: 5000 },
+    );
+
+    const driven = await runB2FullCanaryDriver({
+      handoff,
+      dispatcher,
+      cycleId: cycle.cycle_id,
+      maxSteps: 24,
+    });
+    assert.equal(driven.status, "ACCEPTED");
+    assert.equal(driven.initialPcPolicy, "DISPATCH_REVIEW");
+    assert.equal(builderCalls, 2);
+    assert.equal(reviewerCalls, 2);
+    const decisions = handoff
+      .listEnvelopes(cycle.cycle_id)
+      .filter((e) => e.kind === "program_control_decision")
+      .map((e) => (e.body as PcDecisionBody).decision);
+    assert.deepEqual(decisions, ["BUILD", "REWORK", "ACCEPT"]);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

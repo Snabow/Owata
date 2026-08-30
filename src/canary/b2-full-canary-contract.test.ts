@@ -106,6 +106,10 @@ test("PC prompt surfaces DISPATCH_REVIEW canary contract and RETRY rules", () =>
     compiled.text,
     /Return RETRY when recovery_target_request_id is null/,
   );
+  assert.match(
+    compiled.text,
+    /recovery_target_request_id: null \(RETRY forbidden\)/,
+  );
 });
 
 test("PC prompt omits B2-S2 canary contract without durable marker", () => {
