@@ -10,9 +10,12 @@ export {
   type BindingSelectionResult,
   type BindingSelectionStatus,
   type CostAssessmentResult,
+  type CostAwareBindingSelectionResult,
+  type CostConstraintAssessmentResult,
   type CostEstimate,
   type CostObservation,
   type CostProbeResult,
+  type CostRoutingConstraint,
   type CostState,
   type EligibilityRequest,
   type EligibilityResult,
@@ -51,3 +54,8 @@ export {
   normalizeCostEstimate,
   observeBindingCost,
 } from "./cost.js";
+export {
+  applyCostRoutingConstraint,
+  compareDecimalAmounts,
+  selectBindingWithQuotaAndCost,
+} from "./cost-policy.js";

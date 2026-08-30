@@ -166,6 +166,42 @@ export interface CostAssessmentResult {
   observations: CostObservation[];
 }
 
+/** Explicit estimate ceiling input for pure cost routing (S10). Not spend authorization. */
+export interface CostRoutingConstraint {
+  max_estimate: CostEstimate;
+}
+
+/** Cost constraint partitions (A-024). Input binding order preserved in each. */
+export interface CostConstraintAssessmentResult {
+  within_ceiling: ProviderBinding[];
+  over_ceiling: ProviderBinding[];
+  unknown: ProviderBinding[];
+  currency_mismatch: ProviderBinding[];
+  observations: CostObservation[];
+}
+
+/** Pure quota+cost selection result (S10). SELECTED always exposes estimate + quota_state. */
+export type CostAwareBindingSelectionResult =
+  | {
+      status: "SELECTED";
+      binding: ProviderBinding;
+      quota_state: "AVAILABLE" | "UNKNOWN";
+      cost_state: "ESTIMATE_AVAILABLE";
+      estimate: CostEstimate;
+    }
+  | {
+      status: "NO_ELIGIBLE_BINDING";
+    }
+  | {
+      status: "NO_AVAILABLE_BINDING";
+    }
+  | {
+      status: "NO_QUOTA_ROUTABLE_BINDING";
+    }
+  | {
+      status: "NO_COST_VERIFIABLE_BINDING";
+    };
+
 export class RouterError extends Error {
   readonly code: string;
 
