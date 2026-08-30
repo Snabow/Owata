@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
   statSync,
@@ -460,6 +461,135 @@ test("unknown persisted cycle state fails closed without invalid next authority"
     assert.match(result.stderr, /Invalid cycle state/);
   } finally {
     delete process.env.OWATA_STATE_DIR;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("malformed v1 core schema columns fail closed without mutation", () => {
+  const dir = tempState();
+  try {
+    mkdirSync(dir, { recursive: true });
+    const db = new DatabaseSync(dbPath(dir));
+    db.exec(`
+      CREATE TABLE schema_meta (
+        id INTEGER PRIMARY KEY,
+        version INTEGER NOT NULL
+      );
+      CREATE TABLE projects (
+        project_id TEXT PRIMARY KEY,
+        title TEXT NOT NULL
+      );
+      CREATE TABLE work_items (
+        work_id TEXT PRIMARY KEY,
+        blob TEXT
+      );
+      CREATE TABLE events (
+        event_id TEXT PRIMARY KEY,
+        data TEXT
+      );
+      INSERT INTO schema_meta (id, version) VALUES (1, 1);
+    `);
+    db.close();
+    const before = readFileSync(dbPath(dir));
+    assert.throws(
+      () => readStatusSnapshot(dir),
+      /missing required column/,
+    );
+    process.env.OWATA_STATE_DIR = dir;
+    assert.equal(main(["node", "owata", "status"]), 1);
+    delete process.env.OWATA_STATE_DIR;
+    assert.equal(existsSync(eventsJsonlPath(dir)), false);
+    assert.deepEqual(readFileSync(dbPath(dir)), before);
+  } finally {
+    delete process.env.OWATA_STATE_DIR;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("version-aware required columns reject later-version gaps", () => {
+  const cases: Array<{ version: number; alter: (db: DatabaseSync) => void; match: RegExp }> = [
+    {
+      version: 2,
+      alter: (db) => {
+        db.exec(`
+          CREATE TABLE schema_meta (id INTEGER PRIMARY KEY, version INTEGER NOT NULL);
+          CREATE TABLE projects (project_id TEXT PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+          CREATE TABLE work_items (work_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, state TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 0, lease_owner TEXT, lease_token TEXT, lease_expires_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+          CREATE TABLE events (event_id TEXT PRIMARY KEY, ts TEXT NOT NULL, event_type TEXT NOT NULL, project_id TEXT, work_id TEXT, payload TEXT NOT NULL, jsonl_flushed INTEGER NOT NULL DEFAULT 0);
+          CREATE TABLE work_attempts (attempt_id TEXT PRIMARY KEY, work_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, worker_id TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, execution_ok INTEGER, result_json TEXT, verification_status TEXT, verification_detail TEXT, repair_applied INTEGER NOT NULL DEFAULT 0, repair_note TEXT, created_at TEXT NOT NULL);
+        `);
+        db.prepare("INSERT INTO schema_meta (id, version) VALUES (1, 2)").run();
+      },
+      match: /missing required column 'task_type'/,
+    },
+    {
+      version: 3,
+      alter: (db) => {
+        db.exec(`
+          CREATE TABLE schema_meta (id INTEGER PRIMARY KEY, version INTEGER NOT NULL);
+          CREATE TABLE projects (project_id TEXT PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+          CREATE TABLE work_items (work_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, state TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 0, lease_owner TEXT, lease_token TEXT, lease_expires_at TEXT, task_type TEXT, task_input TEXT, repair_count INTEGER NOT NULL DEFAULT 0, max_repairs INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+          CREATE TABLE events (event_id TEXT PRIMARY KEY, ts TEXT NOT NULL, event_type TEXT NOT NULL, project_id TEXT, work_id TEXT, payload TEXT NOT NULL, jsonl_flushed INTEGER NOT NULL DEFAULT 0);
+          CREATE TABLE work_attempts (attempt_id TEXT PRIMARY KEY, work_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, worker_id TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, execution_ok INTEGER, result_json TEXT, verification_status TEXT, verification_detail TEXT, repair_applied INTEGER NOT NULL DEFAULT 0, repair_note TEXT, created_at TEXT NOT NULL);
+        `);
+        db.prepare("INSERT INTO schema_meta (id, version) VALUES (1, 3)").run();
+      },
+      match: /missing required column 'failure_reason'|missing required column 'attempt_outcome'/,
+    },
+    {
+      version: 4,
+      alter: (db) => {
+        db.exec(`
+          CREATE TABLE schema_meta (id INTEGER PRIMARY KEY, version INTEGER NOT NULL);
+          CREATE TABLE projects (project_id TEXT PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+          CREATE TABLE work_items (work_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, state TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 0, lease_owner TEXT, lease_token TEXT, lease_expires_at TEXT, task_type TEXT, task_input TEXT, repair_count INTEGER NOT NULL DEFAULT 0, max_repairs INTEGER NOT NULL DEFAULT 1, failure_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+          CREATE TABLE events (event_id TEXT PRIMARY KEY, ts TEXT NOT NULL, event_type TEXT NOT NULL, project_id TEXT, work_id TEXT, payload TEXT NOT NULL, jsonl_flushed INTEGER NOT NULL DEFAULT 0);
+          CREATE TABLE work_attempts (attempt_id TEXT PRIMARY KEY, work_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, worker_id TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, execution_ok INTEGER, result_json TEXT, verification_status TEXT, verification_detail TEXT, repair_applied INTEGER NOT NULL DEFAULT 0, repair_note TEXT, attempt_outcome TEXT, created_at TEXT NOT NULL);
+        `);
+        db.prepare("INSERT INTO schema_meta (id, version) VALUES (1, 4)").run();
+      },
+      match: /missing required column 'event_seq'/,
+    },
+  ];
+
+  for (const c of cases) {
+    const dir = tempState();
+    try {
+      mkdirSync(dir, { recursive: true });
+      const db = new DatabaseSync(dbPath(dir));
+      c.alter(db);
+      db.close();
+      assert.throws(() => readStatusSnapshot(dir), c.match);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // v5: declared current schema missing cycles.state fails closed.
+  const dir = tempState();
+  try {
+    mkdirSync(dir, { recursive: true });
+    const db = new DatabaseSync(dbPath(dir));
+    db.exec(`
+      CREATE TABLE schema_meta (id INTEGER PRIMARY KEY, version INTEGER NOT NULL);
+      CREATE TABLE projects (project_id TEXT PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE work_items (work_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, state TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 0, lease_owner TEXT, lease_token TEXT, lease_expires_at TEXT, task_type TEXT, task_input TEXT, repair_count INTEGER NOT NULL DEFAULT 0, max_repairs INTEGER NOT NULL DEFAULT 1, failure_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE events (event_id TEXT PRIMARY KEY, ts TEXT NOT NULL, event_type TEXT NOT NULL, project_id TEXT, work_id TEXT, payload TEXT NOT NULL, jsonl_flushed INTEGER NOT NULL DEFAULT 0, event_seq INTEGER);
+      CREATE TABLE work_attempts (attempt_id TEXT PRIMARY KEY, work_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, worker_id TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, execution_ok INTEGER, result_json TEXT, verification_status TEXT, verification_detail TEXT, repair_applied INTEGER NOT NULL DEFAULT 0, repair_note TEXT, attempt_outcome TEXT, created_at TEXT NOT NULL);
+      CREATE TABLE cycles (cycle_id TEXT PRIMARY KEY);
+      CREATE TABLE envelopes (envelope_id TEXT PRIMARY KEY, cycle_id TEXT NOT NULL, kind TEXT NOT NULL, request_id TEXT, from_role TEXT NOT NULL, to_role TEXT, body_json TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE dispatches (dispatch_id TEXT PRIMARY KEY, cycle_id TEXT NOT NULL, request_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, fence_token TEXT NOT NULL, owner TEXT NOT NULL, target_role TEXT NOT NULL, state TEXT NOT NULL, lease_expires_at TEXT NOT NULL, result_envelope_id TEXT, failure_class TEXT, failure_detail TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE human_gates (gate_id TEXT PRIMARY KEY, cycle_id TEXT NOT NULL, decision_envelope_id TEXT NOT NULL, purpose TEXT NOT NULL, allowed_choices_json TEXT NOT NULL, state TEXT NOT NULL, selected_choice TEXT, note TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    `);
+    db.prepare("INSERT INTO schema_meta (id, version) VALUES (1, ?)").run(
+      SCHEMA_VERSION,
+    );
+    db.close();
+    assert.throws(
+      () => readStatusSnapshot(dir),
+      /missing required column/,
+    );
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

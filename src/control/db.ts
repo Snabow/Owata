@@ -21,13 +21,191 @@ export function eventsJsonlPath(stateDir: string): string {
   return join(stateDir, EVENTS_JSONL_FILENAME);
 }
 
-function requiredTablesForSchemaVersion(version: number): string[] {
-  const tables = ["schema_meta", "projects", "work_items", "events"];
-  if (version >= 2) tables.push("work_attempts");
-  if (version >= 5) {
-    tables.push("cycles", "envelopes", "dispatches", "human_gates");
+function requiredSchemaShape(
+  version: number,
+): Array<{ table: string; columns: string[] }> {
+  const shape: Array<{ table: string; columns: string[] }> = [
+    { table: "schema_meta", columns: ["id", "version"] },
+    {
+      table: "projects",
+      columns: ["project_id", "name", "state", "created_at", "updated_at"],
+    },
+    {
+      table: "work_items",
+      columns: [
+        "work_id",
+        "project_id",
+        "title",
+        "state",
+        "attempt",
+        "lease_owner",
+        "lease_token",
+        "lease_expires_at",
+        "created_at",
+        "updated_at",
+      ],
+    },
+    {
+      table: "events",
+      columns: [
+        "event_id",
+        "ts",
+        "event_type",
+        "project_id",
+        "work_id",
+        "payload",
+        "jsonl_flushed",
+      ],
+    },
+  ];
+
+  if (version >= 2) {
+    shape.find((t) => t.table === "work_items")!.columns.push(
+      "task_type",
+      "task_input",
+      "repair_count",
+      "max_repairs",
+    );
+    shape.push({
+      table: "work_attempts",
+      columns: [
+        "attempt_id",
+        "work_id",
+        "attempt_number",
+        "worker_id",
+        "started_at",
+        "finished_at",
+        "execution_ok",
+        "result_json",
+        "verification_status",
+        "verification_detail",
+        "repair_applied",
+        "repair_note",
+        "created_at",
+      ],
+    });
   }
-  return tables;
+
+  if (version >= 3) {
+    shape.find((t) => t.table === "work_items")!.columns.push("failure_reason");
+    shape
+      .find((t) => t.table === "work_attempts")!
+      .columns.push("attempt_outcome");
+  }
+
+  if (version >= 4) {
+    shape.find((t) => t.table === "events")!.columns.push("event_seq");
+  }
+
+  if (version >= 5) {
+    shape.push(
+      {
+        table: "cycles",
+        columns: [
+          "cycle_id",
+          "project_id",
+          "work_package_ref",
+          "base_sha",
+          "latest_candidate_sha",
+          "accepted_candidate_sha",
+          "state",
+          "current_request_id",
+          "policy_json",
+          "policy_authorized_by_decision_id",
+          "recovery_target_request_id",
+          "recovery_lineage_id",
+          "max_dispatch_retries",
+          "recovery_reason",
+          "created_at",
+          "updated_at",
+        ],
+      },
+      {
+        table: "envelopes",
+        columns: [
+          "envelope_id",
+          "cycle_id",
+          "kind",
+          "request_id",
+          "from_role",
+          "to_role",
+          "body_json",
+          "created_at",
+        ],
+      },
+      {
+        table: "dispatches",
+        columns: [
+          "dispatch_id",
+          "cycle_id",
+          "request_id",
+          "attempt_number",
+          "fence_token",
+          "owner",
+          "target_role",
+          "state",
+          "lease_expires_at",
+          "result_envelope_id",
+          "failure_class",
+          "failure_detail",
+          "created_at",
+          "updated_at",
+        ],
+      },
+      {
+        table: "human_gates",
+        columns: [
+          "gate_id",
+          "cycle_id",
+          "decision_envelope_id",
+          "purpose",
+          "allowed_choices_json",
+          "state",
+          "selected_choice",
+          "note",
+          "created_at",
+          "updated_at",
+        ],
+      },
+    );
+  }
+
+  return shape;
+}
+
+function assertTableHasColumns(
+  db: DatabaseSync,
+  table: string,
+  required: string[],
+): void {
+  let rows: Array<{ name: string }>;
+  try {
+    rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string;
+    }>;
+  } catch (err) {
+    throw new ControlError(
+      "STATE_CORRUPT",
+      `control.sqlite table '${table}' unreadable: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+  if (rows.length === 0) {
+    throw new ControlError(
+      "STATE_CORRUPT",
+      `control.sqlite missing required table '${table}'`,
+    );
+  }
+  const have = new Set(rows.map((r) => r.name));
+  for (const col of required) {
+    if (!have.has(col)) {
+      throw new ControlError(
+        "STATE_CORRUPT",
+        `control.sqlite table '${table}' missing required column '${col}'`,
+      );
+    }
+  }
 }
 
 /**
@@ -92,13 +270,14 @@ export function assertRecognizedOwataControlSqlite(sqlitePath: string): void {
         );
       }
 
-      for (const table of requiredTablesForSchemaVersion(version)) {
+      for (const { table, columns } of requiredSchemaShape(version)) {
         if (!tables.has(table)) {
           throw new ControlError(
             "STATE_CORRUPT",
             `control.sqlite missing required table '${table}' for schema v${version}`,
           );
         }
+        assertTableHasColumns(db, table, columns);
       }
     } catch (err) {
       if (err instanceof ControlError) throw err;
