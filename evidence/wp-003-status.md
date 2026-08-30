@@ -1,10 +1,20 @@
-﻿# WP-003-STATUS 窶・Durable-state-backed `owata status`
+﻿# WP-003-STATUS — Durable-state-backed `owata status`
 
 **Work Package:** WP-003-STATUS
-**Requests:** OWATA-REQ-0062 (implement), OWATA-REQ-0064 (F001 fail-closed repair)
+**Requests:** OWATA-REQ-0062 (implement), OWATA-REQ-0064 / 0066 (fail-closed repairs), OWATA-REQ-0067 (final IR)
 **Closes blocker:** C08_DURABLE_STATUS_VIEW
-**WP003_DONE:** NO (pending Independent Review + Program Control closure)
-**C08_ACCEPTED:** NO
+**WP003_DONE:** YES
+**C08_ACCEPTED:** YES
+**Program Control acceptance:** OWATA-REQ-0068
+**Final review:** OWATA-REQ-0067 PASS / READY
+**Final reviewed target:** `40b393df32dac953aae8676f1523f2a8d57d1b79`
+**Final source:** `22ab131d1099954e4f4ae8b03a5692719606bb8f`
+**F001:** RESOLVED
+**Final tests:** 186/186 PASS
+**Build:** PASS
+**Diff check:** PASS
+
+Main does **not** yet contain this closure candidate tip. Authoritative main before merge: `32600ac6272010b130d4266628867ae8bd1516da`.
 
 ## Requirement
 
@@ -17,7 +27,7 @@ Next: Bootstrap control core
 
 with a minimum truthful `owata status` backed by existing SQLite control state,
 and fail closed on malformed/unrecognized existing durable state
-(OWATA-REQ-0063-F001 / OWATA-REQ-0064).
+(OWATA-REQ-0063-F001 / OWATA-REQ-0065-F001 lineage).
 
 ## Source of truth
 
@@ -46,7 +56,7 @@ If `<OWATA_STATE_DIR>/control.sqlite` does not exist:
 - exit 0
 - **do not** create `control.sqlite`, WAL files, or `events.jsonl`
 
-## Fail-closed recognition (OWATA-REQ-0064)
+## Fail-closed recognition
 
 Before status may call normal `ControlStore.open` / migration on an **existing**
 file, preflight verifies read-only:
@@ -54,11 +64,11 @@ file, preflight verifies read-only:
 - readable SQLite
 - `schema_meta` with row `id=1`
 - schema version in supported migration inputs `1..SCHEMA_VERSION`
-- core tables recognizable for that version
+- core tables and **version-required columns** (`PRAGMA table_info`)
 
 Malformed cases (zero-byte, random bytes, non-OWATA SQLite, missing meta row,
 unsupported version, unknown persisted `cycles.state`, tables present but missing
-version-required columns) 竊・exit 1, no PRESENT, no Genesis stub, no `events.jsonl`
+version-required columns) → exit 1, no PRESENT, no Genesis stub, no `events.jsonl`
 / status-created repair artifacts, no control.sqlite mutation.
 
 Recognized historical OWATA DBs may still use normal migration.
@@ -82,11 +92,11 @@ Most recently updated cycle: `updated_at DESC`, then `cycle_id DESC`.
 
 ## Validation
 
-- `npm test` / `npm run build` 窶・PASS (see RESULT)
+- `npm test` / `npm run build` — PASS (186/186 at OWATA-REQ-0067)
 - Isolated `OWATA_STATE_DIR` CLI proofs for ABSENT, PRESENT, and corrupt fail-closed
-- No external model invocations
+- No external model invocations for status itself
 
-## Identity
+## Identity / lineage
 
 ### OWATA-REQ-0062
 
@@ -108,3 +118,9 @@ Most recently updated cycle: `updated_at DESC`, then `cycle_id DESC`.
 - Strengthens recognition with version-aware required-column checks via `PRAGMA table_info` before `ControlStore.open`.
 - **NEW_IMPLEMENTATION_SHA:** `22ab131d1099954e4f4ae8b03a5692719606bb8f`
 - **NEW_IMPLEMENTATION_TREE_SHA:** `286ad28739c26da830d9873205df1e3dad9666f7`
+
+### OWATA-REQ-0067 / OWATA-REQ-0068
+
+- **FINAL_REVIEW:** OWATA-REQ-0067 PASS / READY (`C08_READINESS: READY`, FINDINGS: none)
+- **FINAL_REVIEW_TARGET:** `40b393df32dac953aae8676f1523f2a8d57d1b79`
+- **PROGRAM_CONTROL_CLOSURE:** OWATA-REQ-0068 → `C08_ACCEPTED=YES`, `WP003_DONE=YES`

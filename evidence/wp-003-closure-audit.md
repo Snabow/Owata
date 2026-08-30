@@ -157,6 +157,26 @@ No additional unnamed Phase 3 product surface is acceptance-critical beyond **C0
 
 Notes: C10/C11/C21/C22/C23 = deferred non-goals. C16 durable reconstruction of cycle/project records = SATISFIED; CLI surface remains C08. C24 = stale docs. C25 = Browser Relay deletion wording (resolved by OWATA-REQ-0060 disposition).
 
-Exact remaining blocker IDs: `C08_DURABLE_STATUS_VIEW`
+Exact remaining blocker IDs **at audit time:** `C08_DURABLE_STATUS_VIEW`
 
-Implementation candidate (not yet accepted): OWATA-REQ-0062 on branch `wp-003/status` — see `evidence/wp-003-status.md`. Audit classification of C08 remains TRUE_REMAINING_GAP until Independent Review + Program Control acceptance.
+Implementation candidate path (historical): OWATA-REQ-0062 on branch `wp-003/status` — see `evidence/wp-003-status.md`.
+
+---
+
+## Final disposition (after OWATA-REQ-0068)
+
+This section records Program Control closure **after** the audit. It does **not** rewrite the audit-time classification above.
+
+| Field | Value |
+| --- | --- |
+| AUDIT_RESULT_AT_0061 | 1 TRUE_REMAINING_GAP = C08_DURABLE_STATUS_VIEW |
+| FINAL_DISPOSITION | C08_ACCEPTED=YES |
+| FINAL_REVIEW | OWATA-REQ-0067 PASS / READY |
+| FINAL_REVIEW_TARGET | `40b393df32dac953aae8676f1523f2a8d57d1b79` |
+| FINAL_STATUS_IMPLEMENTATION_SHA | `22ab131d1099954e4f4ae8b03a5692719606bb8f` |
+| WP003_DONE | YES |
+| PROGRAM_CONTROL_CLOSURE | OWATA-REQ-0068 |
+
+**Closure chain:** OWATA-REQ-0061 (audit) → 0062 (status impl) → 0063 REWORK F001 → 0064 fail-closed repair → 0065 REWORK F001 → 0066 schema-column preflight → 0067 PASS/READY → Program Control OWATA-REQ-0068 accepts C08 and declares WP-003 DONE.
+
+The audit gap was subsequently implemented, independently reviewed, and accepted. Main merge of the closure candidate remains a separate Human Gate; authoritative main before merge: `32600ac6272010b130d4266628867ae8bd1516da`.
