@@ -106,5 +106,5 @@ Most recently updated cycle: `updated_at DESC`, then `cycle_id DESC`.
 - **BASE:** `d6581992d5b84558a136e21d6b628dd874ed3109`
 - **AUTHORIZED_FINDING:** OWATA-REQ-0065-F001
 - Strengthens recognition with version-aware required-column checks via `PRAGMA table_info` before `ControlStore.open`.
-- - **NEW_IMPLEMENTATION_SHA:** `22ab131d1099954e4f4ae8b03a5692719606bb8f`
+- **NEW_IMPLEMENTATION_SHA:** `22ab131d1099954e4f4ae8b03a5692719606bb8f`
 - **NEW_IMPLEMENTATION_TREE_SHA:** `286ad28739c26da830d9873205df1e3dad9666f7`
