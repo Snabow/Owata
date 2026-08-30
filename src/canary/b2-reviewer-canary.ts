@@ -82,6 +82,38 @@ function cleanup(dir: string): void {
 }
 
 async function main(): Promise<number> {
+  const repoRoot = owataRepoRoot();
+
+  // F01: fail closed before any external Reviewer invocation if source is dirty
+  // or HEAD is not a committed identity we can prove.
+  const porcelain = git(["status", "--porcelain", "--untracked-files=no"], repoRoot);
+  if (porcelain.length > 0) {
+    console.log(
+      JSON.stringify({
+        status: "BLOCKED",
+        reason: "SOURCE_DIRTY",
+        detail: porcelain,
+        real_reviewer_invocations: 0,
+      }),
+    );
+    return 4;
+  }
+  const owataSourceSha = git(["rev-parse", "HEAD"], repoRoot);
+  const owataSourceTreeSha = git(["rev-parse", "HEAD^{tree}"], repoRoot);
+  const expectedSha = process.env.OWATA_CANARY_REQUIRED_SOURCE_SHA;
+  if (expectedSha && expectedSha.toLowerCase() !== owataSourceSha.toLowerCase()) {
+    console.log(
+      JSON.stringify({
+        status: "BLOCKED",
+        reason: "SOURCE_SHA_MISMATCH",
+        owata_source_sha: owataSourceSha,
+        required: expectedSha,
+        real_reviewer_invocations: 0,
+      }),
+    );
+    return 5;
+  }
+
   const binding = new CodexCliBinding();
   const probe = await binding.probe();
   if (!probe.ok || !probe.authReady) {
@@ -91,14 +123,15 @@ async function main(): Promise<number> {
         reason: "CREDENTIAL_UNAVAILABLE",
         runtime_version: probe.runtimeVersion ?? null,
         detail: probe.detail ?? null,
+        owata_source_sha: owataSourceSha,
+        owata_source_tree_sha: owataSourceTreeSha,
+        source_tracked_clean: true,
         real_reviewer_invocations: 0,
       }),
     );
     return 2;
   }
 
-  const repoRoot = owataRepoRoot();
-  const owataSourceSha = git(["rev-parse", "HEAD"], repoRoot);
   const runId = `run_${new Date().toISOString().replace(/[:.]/g, "-")}`;
   const evidenceDir = join(
     repoRoot,
@@ -251,6 +284,8 @@ async function main(): Promise<number> {
       evidenceDir,
       owataRepoRoot: repoRoot,
       owataSourceSha,
+      owataSourceTreeSha,
+      sourceTrackedClean: true,
       runId,
       reviewerBindingId: binding.bindingId,
       reviewerBindingVersion: binding.bindingVersion,
@@ -299,8 +334,9 @@ async function main(): Promise<number> {
       evidence_manifest_hash: persisted.manifestHash,
       candidate_resolution_check: persisted.candidateResolutionCheck,
       owata_source_sha: owataSourceSha,
+      owata_source_tree_sha: owataSourceTreeSha,
+      source_tracked_clean: true,
       run_id: runId,
-      // silence unused import guard if tree-shaken oddly
       protocol: PROTOCOL_V1,
     };
 

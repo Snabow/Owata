@@ -18,6 +18,8 @@ export interface PersistB2ReviewerEvidenceArgs {
   evidenceDir: string;
   owataRepoRoot: string;
   owataSourceSha: string;
+  owataSourceTreeSha?: string;
+  sourceTrackedClean?: boolean;
   runId: string;
   reviewerBindingId: string;
   reviewerBindingVersion: string;
@@ -200,6 +202,8 @@ export function persistB2ReviewerEvidence(
     run_id: args.runId,
     status: args.status,
     owata_source_sha: args.owataSourceSha,
+    owata_source_tree_sha: args.owataSourceTreeSha ?? null,
+    source_tracked_clean: args.sourceTrackedClean ?? null,
     candidate_sha: args.candidateSha,
     request_id: args.requestId,
     cycle_id: args.cycleId,

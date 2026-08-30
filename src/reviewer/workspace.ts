@@ -3,6 +3,9 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { ControlError } from "../control/types.js";
 
+/** Full SHA-1 commit object id (lowercase hex). */
+const FULL_SHA1 = /^[0-9a-f]{40}$/;
+
 export interface CreateReviewerWorkspaceArgs {
   repoPath: string;
   targetSha: string;
@@ -42,6 +45,53 @@ function git(args: string[], cwd: string): string {
   }
 }
 
+/**
+ * Fail-closed: target_sha must be a full immutable commit object ID.
+ * Rejects HEAD, short prefixes, branches, tags, and revision expressions.
+ */
+export function assertExactCommitObjectId(targetSha: string): string {
+  if (typeof targetSha !== "string" || targetSha.length === 0) {
+    throw new ControlError(
+      "TARGET_SHA_REQUIRED",
+      "target_sha must be a non-empty full commit object id",
+    );
+  }
+  const normalized = targetSha.trim().toLowerCase();
+  if (!FULL_SHA1.test(normalized)) {
+    throw new ControlError(
+      "TARGET_SHA_INVALID",
+      `target_sha must be full 40-char hex commit id, got: ${targetSha}`,
+    );
+  }
+  return normalized;
+}
+
+export function resolveExactCommitSha(
+  repoPath: string,
+  targetSha: string,
+): string {
+  const normalized = assertExactCommitObjectId(targetSha);
+  let resolved: string;
+  try {
+    resolved = git(
+      ["rev-parse", "--verify", `${normalized}^{commit}`],
+      repoPath,
+    ).toLowerCase();
+  } catch {
+    throw new ControlError(
+      "TARGET_SHA_UNRESOLVED",
+      `target_sha unresolved: ${normalized}`,
+    );
+  }
+  if (resolved !== normalized) {
+    throw new ControlError(
+      "TARGET_SHA_MISMATCH",
+      `resolved commit ${resolved} != target_sha ${normalized}`,
+    );
+  }
+  return resolved;
+}
+
 export function reviewerWorkspaceId(args: {
   cycleId: string;
   requestId: string;
@@ -58,25 +108,14 @@ export function reviewerWorkspaceId(args: {
 export function createReviewerWorkspace(
   args: CreateReviewerWorkspaceArgs,
 ): ReviewerWorkspace {
-  let resolved: string;
-  try {
-    resolved = git(
-      ["rev-parse", "--verify", `${args.targetSha}^{commit}`],
-      args.repoPath,
-    );
-  } catch {
-    throw new ControlError(
-      "TARGET_SHA_UNRESOLVED",
-      `target_sha unresolved: ${args.targetSha}`,
-    );
-  }
+  const resolved = resolveExactCommitSha(args.repoPath, args.targetSha);
 
   const workspaceId = reviewerWorkspaceId(args);
   const workspacePath = join(args.workspacesRoot, workspaceId);
   mkdirSync(args.workspacesRoot, { recursive: true });
   git(["worktree", "add", "--detach", workspacePath, resolved], args.repoPath);
 
-  const head = git(["rev-parse", "HEAD"], workspacePath);
+  const head = git(["rev-parse", "HEAD"], workspacePath).toLowerCase();
   if (head !== resolved) {
     throw new ControlError(
       "TARGET_SHA_MISMATCH",

@@ -17,6 +17,8 @@ export {
   createReviewerWorkspace,
   removeReviewerWorkspace,
   reviewerWorkspaceId,
+  resolveExactCommitSha,
+  assertExactCommitObjectId,
   verifyReviewerWorkspaceImmutable,
 } from "./workspace.js";
 export type {
@@ -26,6 +28,7 @@ export type {
 } from "./workspace.js";
 export { GatewayReviewerAdapter, extractJsonObject } from "./gateway.js";
 export type { GatewayReviewerAdapterOptions } from "./gateway.js";
+export { assertStrictReviewerResult } from "./strict-result.js";
 export {
   CodexCliBinding,
   resolveCodexBinary,

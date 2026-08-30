@@ -10,15 +10,16 @@ import {
 } from "../control/adapters.js";
 import {
   PROTOCOL_V1,
-  parseCanonicalEnvelope,
   type Capability,
   type ReviewerResultBody,
 } from "../control/protocol.js";
 import type { ReviewerBinding, ReviewerProbeResult } from "./binding.js";
 import { compileReviewerInstruction } from "./prompt-compiler.js";
+import { assertStrictReviewerResult } from "./strict-result.js";
 import {
   createReviewerWorkspace,
   removeReviewerWorkspace,
+  resolveExactCommitSha,
   verifyReviewerWorkspaceImmutable,
 } from "./workspace.js";
 import {
@@ -152,6 +153,8 @@ export class GatewayReviewerAdapter implements ReviewerAdapter {
         "Reviewer request requires exact target_sha",
       );
     }
+    // Fail closed on symbolic refs / short SHAs before any spawn.
+    resolveExactCommitSha(this.opts.repoPath, targetSha);
 
     // Fail closed: never spawn when auth not ready
     if (!this.probeCache.authReady) {
@@ -180,6 +183,7 @@ export class GatewayReviewerAdapter implements ReviewerAdapter {
       attemptNumber: dispatch.attempt_number,
     });
 
+    let accepted: ReturnType<typeof assertStrictReviewerResult> | null = null;
     try {
       const compiled = compileReviewerInstruction({
         request: input.request,
@@ -284,20 +288,8 @@ export class GatewayReviewerAdapter implements ReviewerAdapter {
         );
       }
 
-      // Correlate before return: schema + target_sha + roles
-      const parsed = parseCanonicalEnvelope(raw);
-      if (parsed.kind !== "reviewer_result") {
-        throw new ControlError(
-          "RESULT_INVALID",
-          `expected reviewer_result, got ${parsed.kind}`,
-        );
-      }
-      if (parsed.from_role !== "reviewer") {
-        throw new ControlError(
-          "RESULT_INVALID",
-          `from_role must be reviewer, got ${parsed.from_role}`,
-        );
-      }
+      // Strict schema validation BEFORE correlation / acceptance
+      const parsed = assertStrictReviewerResult(raw);
       if (parsed.cycle_id !== input.cycle.cycle_id) {
         throw new ControlError(
           "RESULT_STALE",
@@ -318,17 +310,19 @@ export class GatewayReviewerAdapter implements ReviewerAdapter {
         );
       }
 
+      accepted = parsed;
       return parsed;
-    } catch (err) {
+    } finally {
+      // F04: cleanup on both success and failure after durable artifacts captured
       try {
         removeReviewerWorkspace({
           repoPath: this.opts.repoPath,
           workspacePath: workspace.workspacePath,
         });
       } catch {
-        // Best-effort cleanup
+        // Best-effort cleanup; accepted result already captured when present
+        void accepted;
       }
-      throw err;
     }
   }
 

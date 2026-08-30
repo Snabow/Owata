@@ -1031,6 +1031,7 @@ export function classifyFailure(code: string): FailureClass {
     code === "TARGET_SHA_REQUIRED" ||
     code === "TARGET_SHA_UNRESOLVED" ||
     code === "TARGET_SHA_MISMATCH" ||
+    code === "TARGET_SHA_INVALID" ||
     code === "WORKSPACE_DIRTY" ||
     code === "SOURCE_MUTATION"
   ) {
