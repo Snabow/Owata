@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   PROVIDER_REGISTRY_PROTOCOL,
+  RouterError,
   filterEligibleBindings,
   normalizeAvailability,
   observeBindingAvailability,
@@ -162,6 +163,44 @@ test("observation insertion order does not alter result", () => {
   assert.deepEqual(
     reverse.bindings.map((x) => x.binding_id),
     ["a", "b"],
+  );
+});
+
+test("conflicting duplicate observations are rejected order-independently", () => {
+  const b1 = binding({ binding_id: "b1", priority: 1 });
+  const elig = eligible(b1);
+  const forward = [
+    { binding_id: "b1", state: "AVAILABLE" as const },
+    { binding_id: "b1", state: "AGENT_UNAVAILABLE" as const },
+  ];
+  const reverse = [
+    { binding_id: "b1", state: "AGENT_UNAVAILABLE" as const },
+    { binding_id: "b1", state: "AVAILABLE" as const },
+  ];
+  assert.throws(
+    () => overlayAvailability(elig, forward),
+    (err: unknown) =>
+      err instanceof RouterError &&
+      err.code === "AVAILABILITY_INVALID" &&
+      /duplicate availability observation/.test(err.message),
+  );
+  assert.throws(
+    () => overlayAvailability(elig, reverse),
+    (err: unknown) =>
+      err instanceof RouterError && err.code === "AVAILABILITY_INVALID",
+  );
+});
+
+test("identical duplicate observations are also rejected", () => {
+  const b1 = binding({ binding_id: "b1", priority: 1 });
+  assert.throws(
+    () =>
+      overlayAvailability(eligible(b1), [
+        { binding_id: "b1", state: "AVAILABLE" },
+        { binding_id: "b1", state: "AVAILABLE" },
+      ]),
+    (err: unknown) =>
+      err instanceof RouterError && err.code === "AVAILABILITY_INVALID",
   );
 });
 

@@ -1,3 +1,4 @@
+import { RouterError } from "./types.js";
 import type {
   AvailabilityObservation,
   AvailabilityOverlayResult,
@@ -55,6 +56,22 @@ export async function observeBindingAvailability(
   }
 }
 
+function indexObservations(
+  observations: readonly AvailabilityObservation[],
+): Map<string, AvailabilityObservation> {
+  const byId = new Map<string, AvailabilityObservation>();
+  for (const obs of observations) {
+    if (byId.has(obs.binding_id)) {
+      throw new RouterError(
+        "AVAILABILITY_INVALID",
+        `duplicate availability observation for binding_id ${obs.binding_id}`,
+      );
+    }
+    byId.set(obs.binding_id, obs);
+  }
+  return byId;
+}
+
 function observationFor(
   bindingId: string,
   byId: Map<string, AvailabilityObservation>,
@@ -66,25 +83,20 @@ function observationFor(
  * Overlay ephemeral availability onto an S1 EligibilityResult.
  * Preserves S1 order; only AVAILABLE bindings survive.
  * Missing observation is UNKNOWN (fail-closed), never AVAILABLE.
+ * Duplicate binding_id observations fail closed (AVAILABILITY_INVALID).
  */
 export function overlayAvailability(
   eligibility: EligibilityResult,
   observations: readonly AvailabilityObservation[],
 ): AvailabilityOverlayResult {
+  const byId = indexObservations(observations);
+
   if (eligibility.status === "NO_ELIGIBLE_BINDING") {
     return {
       status: "NO_ELIGIBLE_BINDING",
       bindings: [],
       observations: [],
     };
-  }
-
-  const byId = new Map<string, AvailabilityObservation>();
-  for (const obs of observations) {
-    // First observation for a binding_id wins; later unrelated entries ignored for ranking.
-    if (!byId.has(obs.binding_id)) {
-      byId.set(obs.binding_id, obs);
-    }
   }
 
   const resolved: AvailabilityObservation[] = [];

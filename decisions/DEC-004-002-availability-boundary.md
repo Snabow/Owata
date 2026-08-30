@@ -46,6 +46,8 @@ S2 overlays observations onto the S1 eligible set and returns exactly one of:
 
 `NO_ELIGIBLE_BINDING` and `NO_AVAILABLE_BINDING` remain distinct. Neither is mapped to Control Core `FailureClass` in S2.
 
+Within one routing evaluation, availability observation identity is **unique by `binding_id`**. Duplicate `binding_id` observations (identical or conflicting) are invalid and fail closed with `RouterError` code `AVAILABILITY_INVALID`. No first-wins / last-wins / merge / severity ranking.
+
 ### Non-goals for S2
 
 - No dispatch selection / failover / retry
