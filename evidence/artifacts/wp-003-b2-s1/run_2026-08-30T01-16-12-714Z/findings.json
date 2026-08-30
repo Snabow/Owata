@@ -1,0 +1,7 @@
+[
+  {
+    "finding_id": "F-STATUS-001",
+    "severity": "major",
+    "summary": "STATUS.md does not satisfy the repository acceptance contract: ACCEPTANCE.md requires STATUS=READY, but STATUS.md contains STATUS=BROKEN."
+  }
+]
