@@ -4,6 +4,7 @@ import { nowIso } from "./ids.js";
 import {
   parseCanonicalEnvelope,
   parseCyclePolicy,
+  parseCycleState,
   PROTOCOL_V1,
   canonicalEnvelopeIdentity,
   type CanonicalEnvelope,
@@ -86,7 +87,7 @@ function mapCycle(row: Record<string, unknown>): CycleRecord {
       row.accepted_candidate_sha == null
         ? null
         : String(row.accepted_candidate_sha),
-    state: String(row.state) as CycleState,
+    state: parseCycleState(row.state),
     current_request_id:
       row.current_request_id == null ? null : String(row.current_request_id),
     policy: parseCyclePolicy(JSON.parse(String(row.policy_json))),

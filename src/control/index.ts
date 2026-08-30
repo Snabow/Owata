@@ -1,6 +1,7 @@
 export { ControlStore } from "./store.js";
 export type { ControlStoreOptions } from "./store.js";
 export {
+  assertRecognizedOwataControlSqlite,
   dbPath,
   eventsJsonlPath,
   getSchemaVersion,
@@ -21,7 +22,11 @@ export type {
   WorkRecord,
   WorkState,
 } from "./types.js";
-export { PROTOCOL_V1, parseCanonicalEnvelope } from "./protocol.js";
+export {
+  PROTOCOL_V1,
+  parseCanonicalEnvelope,
+  parseCycleState,
+} from "./protocol.js";
 export type {
   CanonicalEnvelope,
   Capability,

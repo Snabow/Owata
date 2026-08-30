@@ -6,13 +6,23 @@ import {
   mkdtempSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { ControlStore, HandoffStore, dbPath, eventsJsonlPath } from "./control/index.js";
+import {
+  ControlError,
+  ControlStore,
+  HandoffStore,
+  SCHEMA_VERSION,
+  dbPath,
+  eventsJsonlPath,
+  parseCycleState,
+} from "./control/index.js";
 import { main } from "./cli.js";
 import {
   formatStatus,
@@ -31,6 +41,80 @@ function seqIds(): (prefix?: string) => string {
 function tempState(): string {
   return mkdtempSync(join(tmpdir(), "owata-status-"));
 }
+
+function assertFailClosedNoMutation(dir: string, beforeNames: string[]): void {
+  assert.throws(() => readStatusSnapshot(dir), ControlError);
+  process.env.OWATA_STATE_DIR = dir;
+  const code = main(["node", "owata", "status"]);
+  delete process.env.OWATA_STATE_DIR;
+  assert.equal(code, 1);
+  assert.equal(existsSync(eventsJsonlPath(dir)), false);
+  const after = readdirSync(dir);
+  assert.ok(!after.includes("events.jsonl"));
+  for (const name of after) {
+    if (
+      (name.endsWith("-wal") || name.endsWith("-shm")) &&
+      !beforeNames.includes(name)
+    ) {
+      assert.fail(`status retained new artifact ${name}`);
+    }
+  }
+  for (const name of beforeNames) {
+    assert.ok(after.includes(name), `expected retained ${name}`);
+  }
+}
+
+function seedHistoricalV1(stateDir: string): void {
+  mkdirSync(stateDir, { recursive: true });
+  const db = new DatabaseSync(dbPath(stateDir));
+  db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+  db.exec(`
+    CREATE TABLE schema_meta (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      version INTEGER NOT NULL
+    );
+    CREATE TABLE projects (
+      project_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      state TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE work_items (
+      work_id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(project_id),
+      title TEXT NOT NULL,
+      state TEXT NOT NULL,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      lease_owner TEXT,
+      lease_token TEXT,
+      lease_expires_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE events (
+      event_id TEXT PRIMARY KEY,
+      ts TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      project_id TEXT,
+      work_id TEXT,
+      payload TEXT NOT NULL,
+      jsonl_flushed INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  db.prepare("INSERT INTO schema_meta (id, version) VALUES (1, 1)").run();
+  db.prepare(
+    `INSERT INTO projects VALUES ('prj_v1','hist-v1','ACTIVE','2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`,
+  ).run();
+  db.close();
+}
+
+test("parseCycleState accepts canonical values and rejects unknown", () => {
+  assert.equal(parseCycleState("AWAITING_PC"), "AWAITING_PC");
+  assert.equal(parseCycleState("ABORTED"), "ABORTED");
+  assert.throws(() => parseCycleState("CORRUPT_STATE"), /Invalid cycle state/);
+  assert.throws(() => parseCycleState(null), /Invalid cycle state/);
+});
 
 test("nextAuthorityForCycleState mapping", () => {
   assert.equal(nextAuthorityForCycleState("AWAITING_PC"), "program_control");
@@ -120,10 +204,14 @@ test("PRESENT: cycle fields and next authority by state", () => {
       });
       if (c.state !== "AWAITING_PC") {
         handoff.transition(cycle.cycle_id, c.state, {
-          current_request_id: c.state === "ACCEPTED" || c.state === "ABORTED" ? null : "req_x",
+          current_request_id:
+            c.state === "ACCEPTED" || c.state === "ABORTED" ? null : "req_x",
           latest_candidate_sha: "b".repeat(40),
           accepted_candidate_sha: c.state === "ACCEPTED" ? "b".repeat(40) : null,
-          recovery_reason: c.state === "RECOVERY_REQUIRED" ? "dispatch_retry_budget_exhausted" : null,
+          recovery_reason:
+            c.state === "RECOVERY_REQUIRED"
+              ? "dispatch_retry_budget_exhausted"
+              : null,
         });
       }
       store.close();
@@ -131,7 +219,10 @@ test("PRESENT: cycle fields and next authority by state", () => {
       const snap = readStatusSnapshot(dir);
       assert.equal(snap.kind, "PRESENT");
       if (snap.kind !== "PRESENT") continue;
-      assert.equal(snap.cycleState, c.state === "AWAITING_PC" ? "AWAITING_PC" : c.state);
+      assert.equal(
+        snap.cycleState,
+        c.state === "AWAITING_PC" ? "AWAITING_PC" : c.state,
+      );
       assert.equal(snap.nextAuthority, c.authority);
       assert.equal(snap.workPackageRef, "WP-003-STATUS");
       const text = formatStatus(snap);
@@ -167,7 +258,6 @@ test("multiple cycles: latest by updated_at then cycle_id", () => {
       workPackageRef: "WP-NEW",
       baseSha: "a".repeat(40),
     });
-    // Bump older to an earlier updated_at explicitly via transition on newer last
     handoff.transition(newer.cycle_id, "DISPATCHING_BUILD", {
       current_request_id: "req_new",
     });
@@ -216,18 +306,178 @@ test("session-independent reopen recovers same cycle identity", () => {
   }
 });
 
-test("corrupt durable state fails closed without bootstrap stub", () => {
+test("zero-byte control.sqlite fails closed without mutation", () => {
+  const dir = tempState();
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(dbPath(dir), Buffer.alloc(0));
+    const before = readdirSync(dir);
+    assertFailClosedNoMutation(dir, before);
+    assert.equal(statSync(dbPath(dir)).size, 0);
+  } finally {
+    delete process.env.OWATA_STATE_DIR;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("random bytes control.sqlite fails closed without PRESENT", () => {
   const dir = tempState();
   try {
     mkdirSync(dir, { recursive: true });
     writeFileSync(dbPath(dir), "not-a-sqlite-database\n", "utf8");
-    assert.throws(() => readStatusSnapshot(dir));
-    process.env.OWATA_STATE_DIR = dir;
-    const code = main(["node", "owata", "status"]);
-    delete process.env.OWATA_STATE_DIR;
-    assert.equal(code, 1);
+    const before = readdirSync(dir);
+    assertFailClosedNoMutation(dir, before);
+    const result = spawnSync(process.execPath, [cliJs, "status"], {
+      encoding: "utf8",
+      windowsHide: true,
+      env: { ...process.env, OWATA_STATE_DIR: dir },
+    });
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(result.stdout, /Durable state: PRESENT/);
+    assert.doesNotMatch(result.stdout, /Bootstrap control core/);
+    assert.doesNotMatch(result.stdout, /State: Genesis/);
+    assert.match(result.stderr, /owata status failed/);
   } finally {
     delete process.env.OWATA_STATE_DIR;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("non-OWATA SQLite fails closed", () => {
+  const dir = tempState();
+  try {
+    mkdirSync(dir, { recursive: true });
+    const db = new DatabaseSync(dbPath(dir));
+    db.exec("CREATE TABLE foo (id INTEGER PRIMARY KEY);");
+    db.close();
+    assertFailClosedNoMutation(dir, readdirSync(dir));
+  } finally {
+    delete process.env.OWATA_STATE_DIR;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("missing schema_meta id=1 fails closed", () => {
+  const dir = tempState();
+  try {
+    mkdirSync(dir, { recursive: true });
+    const db = new DatabaseSync(dbPath(dir));
+    db.exec(`
+      CREATE TABLE schema_meta (
+        id INTEGER PRIMARY KEY,
+        version INTEGER NOT NULL
+      );
+      CREATE TABLE projects (
+        project_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        state TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE work_items (
+        work_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        state TEXT NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        lease_owner TEXT,
+        lease_token TEXT,
+        lease_expires_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE events (
+        event_id TEXT PRIMARY KEY,
+        ts TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        project_id TEXT,
+        work_id TEXT,
+        payload TEXT NOT NULL,
+        jsonl_flushed INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+    db.close();
+    assert.throws(() => readStatusSnapshot(dir), /schema_meta row id=1/);
+    process.env.OWATA_STATE_DIR = dir;
+    assert.equal(main(["node", "owata", "status"]), 1);
+  } finally {
+    delete process.env.OWATA_STATE_DIR;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("unsupported schema version fails closed", () => {
+  const dir = tempState();
+  try {
+    const store = ControlStore.open({ stateDir: dir, idFactory: seqIds() });
+    store.createProject("future");
+    store.close();
+    const db = new DatabaseSync(dbPath(dir));
+    db.prepare("UPDATE schema_meta SET version = 99 WHERE id = 1").run();
+    db.close();
+    assert.throws(
+      () => readStatusSnapshot(dir),
+      /Unsupported schema version 99/,
+    );
+    process.env.OWATA_STATE_DIR = dir;
+    assert.equal(main(["node", "owata", "status"]), 1);
+  } finally {
+    delete process.env.OWATA_STATE_DIR;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("unknown persisted cycle state fails closed without invalid next authority", () => {
+  const dir = tempState();
+  try {
+    const store = ControlStore.open({ stateDir: dir, idFactory: seqIds() });
+    const handoff = new HandoffStore(store);
+    const project = store.createProject("corrupt-state");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-CORRUPT",
+      baseSha: "a".repeat(40),
+    });
+    store.close();
+
+    const db = new DatabaseSync(dbPath(dir));
+    db.prepare("UPDATE cycles SET state = ? WHERE cycle_id = ?").run(
+      "CORRUPT_STATE",
+      cycle.cycle_id,
+    );
+    db.close();
+
+    assert.throws(() => readStatusSnapshot(dir), /Invalid cycle state/);
+    const result = spawnSync(process.execPath, [cliJs, "status"], {
+      encoding: "utf8",
+      windowsHide: true,
+      env: { ...process.env, OWATA_STATE_DIR: dir },
+    });
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(result.stdout, /Durable state: PRESENT/);
+    assert.doesNotMatch(result.stdout, /Next authority: CORRUPT_STATE/);
+    assert.doesNotMatch(result.stdout, /Cycle state: CORRUPT_STATE/);
+    assert.match(result.stderr, /Invalid cycle state/);
+  } finally {
+    delete process.env.OWATA_STATE_DIR;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("supported historical OWATA schema remains migratable via status", () => {
+  const dir = tempState();
+  try {
+    seedHistoricalV1(dir);
+    const snap = readStatusSnapshot(dir);
+    assert.equal(snap.kind, "PRESENT");
+    if (snap.kind !== "PRESENT") return;
+    assert.equal(snap.projectId, "prj_v1");
+    assert.equal(snap.projectName, "hist-v1");
+    assert.equal(snap.nextAuthority, "program_control");
+    const verify = ControlStore.open({ stateDir: dir });
+    assert.equal(verify.schemaVersion(), SCHEMA_VERSION);
+    verify.close();
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

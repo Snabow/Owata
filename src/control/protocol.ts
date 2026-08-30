@@ -74,6 +74,28 @@ export type CycleState =
   | "ACCEPTED"
   | "ABORTED";
 
+const CYCLE_STATES: ReadonlySet<string> = new Set([
+  "AWAITING_PC",
+  "DISPATCHING_PC",
+  "DISPATCHING_BUILD",
+  "DISPATCHING_REVIEW",
+  "HUMAN_GATE",
+  "RECOVERY_REQUIRED",
+  "ACCEPTED",
+  "ABORTED",
+]);
+
+/** Runtime validator for persisted / inbound CycleState values. Fail closed on unknown. */
+export function parseCycleState(value: unknown): CycleState {
+  if (typeof value !== "string" || !CYCLE_STATES.has(value)) {
+    throw new ControlError(
+      "PROTOCOL",
+      `Invalid cycle state: ${typeof value === "string" ? value : String(value)}`,
+    );
+  }
+  return value as CycleState;
+}
+
 export type BuilderCandidatePolicy = "DISPATCH_REVIEW" | "AWAIT_PC";
 
 export interface CyclePolicy {

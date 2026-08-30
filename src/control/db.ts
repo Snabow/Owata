@@ -3,11 +3,12 @@ import {
   existsSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { SCHEMA_VERSION } from "./types.js";
+import { ControlError, SCHEMA_VERSION } from "./types.js";
 
 export const DB_FILENAME = "control.sqlite";
 export const EVENTS_JSONL_FILENAME = "events.jsonl";
@@ -18,6 +19,103 @@ export function dbPath(stateDir: string): string {
 
 export function eventsJsonlPath(stateDir: string): string {
   return join(stateDir, EVENTS_JSONL_FILENAME);
+}
+
+function requiredTablesForSchemaVersion(version: number): string[] {
+  const tables = ["schema_meta", "projects", "work_items", "events"];
+  if (version >= 2) tables.push("work_attempts");
+  if (version >= 5) {
+    tables.push("cycles", "envelopes", "dispatches", "human_gates");
+  }
+  return tables;
+}
+
+/**
+ * Non-destructive recognition of an EXISTING control.sqlite before status
+ * may call the normal ControlStore open/migration path.
+ * Does not CREATE/ALTER/migrate/reconcile or write events.jsonl.
+ */
+export function assertRecognizedOwataControlSqlite(sqlitePath: string): void {
+  let db: DatabaseSync | undefined;
+  try {
+    if (statSync(sqlitePath).size === 0) {
+      throw new ControlError(
+        "STATE_CORRUPT",
+        "control.sqlite exists but is empty",
+      );
+    }
+
+    try {
+      db = new DatabaseSync(sqlitePath, { readOnly: true });
+      const tableRows = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .all() as Array<{ name: string }>;
+      const tables = new Set(tableRows.map((r) => r.name));
+
+      if (!tables.has("schema_meta")) {
+        throw new ControlError(
+          "STATE_CORRUPT",
+          "control.sqlite is not a recognized OWATA store (missing schema_meta)",
+        );
+      }
+
+      let metaRow: { version: number } | undefined;
+      try {
+        metaRow = db
+          .prepare("SELECT version FROM schema_meta WHERE id = 1")
+          .get() as { version: number } | undefined;
+      } catch (err) {
+        throw new ControlError(
+          "STATE_CORRUPT",
+          `control.sqlite schema_meta unreadable: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+
+      if (!metaRow) {
+        throw new ControlError(
+          "STATE_CORRUPT",
+          "control.sqlite schema_meta row id=1 is missing",
+        );
+      }
+
+      const version = Number(metaRow.version);
+      if (
+        !Number.isInteger(version) ||
+        version < 1 ||
+        version > SCHEMA_VERSION
+      ) {
+        throw new ControlError(
+          "STATE_CORRUPT",
+          `Unsupported schema version ${String(metaRow.version)}; supported 1..${SCHEMA_VERSION}`,
+        );
+      }
+
+      for (const table of requiredTablesForSchemaVersion(version)) {
+        if (!tables.has(table)) {
+          throw new ControlError(
+            "STATE_CORRUPT",
+            `control.sqlite missing required table '${table}' for schema v${version}`,
+          );
+        }
+      }
+    } catch (err) {
+      if (err instanceof ControlError) throw err;
+      throw new ControlError(
+        "STATE_CORRUPT",
+        `control.sqlite is not a readable OWATA SQLite store: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // ignore close errors after recognition
+    }
+  }
 }
 
 export function isSqliteBusy(err: unknown): boolean {

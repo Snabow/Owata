@@ -1,6 +1,11 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { ControlStore, dbPath, HandoffStore } from "./control/index.js";
+import {
+  assertRecognizedOwataControlSqlite,
+  ControlStore,
+  dbPath,
+  HandoffStore,
+} from "./control/index.js";
 import type { CycleState } from "./control/protocol.js";
 import { ControlError } from "./control/types.js";
 
@@ -71,6 +76,9 @@ export function readStatusSnapshot(stateDir: string): StatusSnapshot {
       statusCode: "NO_DURABLE_STATE",
     };
   }
+
+  // Fail closed before migration can initialize malformed existing files.
+  assertRecognizedOwataControlSqlite(sqlitePath);
 
   let store: ControlStore;
   try {
