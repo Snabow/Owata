@@ -52,14 +52,23 @@ function normalizeAmountParts(amount: string): {
   return { intDigits, fracDigits };
 }
 
+/** Structural check for CostRoutingConstraint (S7 estimate syntax). No default ceiling. */
+export function isValidCostRoutingConstraint(
+  constraint: unknown,
+): constraint is CostRoutingConstraint {
+  return (
+    constraint != null &&
+    typeof constraint === "object" &&
+    isValidCostEstimate(
+      (constraint as { max_estimate?: unknown }).max_estimate,
+    )
+  );
+}
+
 function assertCostRoutingConstraint(
   constraint: CostRoutingConstraint,
 ): CostEstimate {
-  if (
-    constraint == null ||
-    typeof constraint !== "object" ||
-    !isValidCostEstimate(constraint.max_estimate)
-  ) {
+  if (!isValidCostRoutingConstraint(constraint)) {
     throw new RouterError(
       "COST_INVALID",
       "cost routing constraint.max_estimate must be a canonical CostEstimate",

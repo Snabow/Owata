@@ -42,21 +42,28 @@ export type {
 } from "./adapters.js";
 export {
   validateRuntimeCatalog,
+  requireCostRoutingConstraint,
   selectRoutedBinding,
   resolvePinnedBinding,
   sanitizeRoutingObservations,
   sanitizeQuotaRoutingObservations,
+  sanitizeCostRoutingObservations,
+  sanitizeCostConstraintSnapshot,
   observeQuotaForAvailableBindings,
+  observeCostForQuotaRoutableBindings,
   catalogByBindingId,
   eligibilityRequestFor,
 } from "./routing.js";
 export type {
   AvailabilityProbeFn,
   QuotaProbeFn,
+  CostProbeFn,
   RuntimeCatalogEntry,
   RoutingConfig,
   RoutingBlockReason,
   RoutedBindingOutcome,
   DurableRoutingObservation,
   DurableQuotaRoutingObservation,
+  DurableCostRoutingObservation,
+  DurableCostConstraintSnapshot,
 } from "./routing.js";

@@ -12,6 +12,7 @@ import {
   selectRoutedBinding,
   validateRuntimeCatalog,
   type AvailabilityProbeFn,
+  type CostProbeFn,
   type RuntimeCatalogEntry,
 } from "./routing.js";
 import {
@@ -23,10 +24,45 @@ import type { PcDecisionBody } from "./protocol.js";
 import {
   PROVIDER_REGISTRY_PROTOCOL,
   parseProviderRegistryJson,
+  type CostRoutingConstraint,
   type ProviderRegistry,
 } from "../router/index.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/** Shared live cost ceiling for S5/S9 fixtures under S11 cutover (A-026). */
+const TEST_COST_CONSTRAINT: CostRoutingConstraint = {
+  max_estimate: { amount_decimal: "100", currency_code: "USD" },
+};
+
+function costWithin(amount = "1"): CostProbeFn {
+  return () => ({
+    estimate: { amount_decimal: amount, currency_code: "USD" },
+  });
+}
+
+function costOver(): CostProbeFn {
+  return () => ({
+    estimate: { amount_decimal: "101", currency_code: "USD" },
+  });
+}
+
+function costMismatch(): CostProbeFn {
+  return () => ({
+    estimate: { amount_decimal: "1", currency_code: "EUR" },
+  });
+}
+
+function costMalformed(): CostProbeFn {
+  return () =>
+    ({ estimate: { amount_decimal: "nope", currency_code: "usd" } }) as never;
+}
+
+function costThrows(): CostProbeFn {
+  return () => {
+    throw new Error("cost probe boom");
+  };
+}
 
 function tempState(): string {
   return mkdtempSync(join(tmpdir(), "owata-wp004-s5-"));
@@ -164,6 +200,7 @@ test("validateRuntimeCatalog fail-closed cases", () => {
           role: "builder",
           adapter: builder,
           probe: available(),
+        costProbe: costWithin(),
         },
       ]),
     (err: unknown) =>
@@ -178,12 +215,14 @@ test("validateRuntimeCatalog fail-closed cases", () => {
           role: "builder",
           adapter: builder,
           probe: available(),
+        costProbe: costWithin(),
         },
         {
           binding_id: "builder-a",
           role: "builder",
           adapter: builder,
           probe: available(),
+        costProbe: costWithin(),
         },
       ]),
     /duplicate/,
@@ -197,6 +236,7 @@ test("validateRuntimeCatalog fail-closed cases", () => {
           role: "builder",
           adapter: pc as unknown as typeof builder,
           probe: available(),
+        costProbe: costWithin(),
         },
       ]),
     /adapter\.identity\.role/,
@@ -210,6 +250,7 @@ test("validateRuntimeCatalog fail-closed cases", () => {
           role: "builder",
           adapter: builder,
           probe: available(),
+        costProbe: costWithin(),
         },
       ]),
     /absent from ProviderRegistry/,
@@ -228,6 +269,7 @@ test("validateRuntimeCatalog fail-closed cases", () => {
           role: "program_control",
           adapter: mismatched as unknown as FakeProgramControlAdapter,
           probe: available(),
+        costProbe: costWithin(),
         },
       ]),
     (err: unknown) =>
@@ -248,12 +290,14 @@ test("missing registry binding without catalog entry is UNKNOWN; cannot select",
       role: "builder",
       adapter: builderB,
       probe: available(),
+      costProbe: costWithin(),
     },
   ]);
   const outcome = await selectRoutedBinding({
     registry,
     catalog,
     request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
   });
   // builder-a is higher priority but UNKNOWN → skip; builder-b AVAILABLE → SELECTED
   assert.equal(outcome.status, "SELECTED");
@@ -270,6 +314,7 @@ test("missing registry binding without catalog entry is UNKNOWN; cannot select",
     registry,
     catalog: catalogByBindingId([]),
     request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
   });
   assert.equal(onlyUnknown.status, "BLOCKED");
   if (onlyUnknown.status === "BLOCKED") {
@@ -411,18 +456,21 @@ test("routing enabled uses catalog adapter, not legacy fixed fallback", async ()
         role: "program_control",
         adapter: catalogPc,
         probe: available(),
+      costProbe: costWithin(),
       },
       {
         binding_id: "builder-a",
         role: "builder",
         adapter: catalogBuilder,
         probe: available(),
+      costProbe: costWithin(),
       },
       {
         binding_id: "reviewer-main",
         role: "reviewer",
         adapter: catalogReviewer,
         probe: available(),
+      costProbe: costWithin(),
       },
     ];
 
@@ -436,7 +484,7 @@ test("routing enabled uses catalog adapter, not legacy fixed fallback", async ()
       {
         owner: "disp",
         leaseMs: 60_000,
-        routing: { registry, catalog },
+        routing: { registry, catalog, costConstraint: TEST_COST_CONSTRAINT },
       },
     );
 
@@ -553,24 +601,28 @@ test("S3 order: unavailable higher priority skipped on initial select; pin block
         role: "program_control",
         adapter: pc,
         probe: available(),
+      costProbe: costWithin(),
       },
       {
         binding_id: "builder-a",
         role: "builder",
         adapter: builderA,
         probe: () => aProbe(),
+        costProbe: costWithin(),
       },
       {
         binding_id: "builder-b",
         role: "builder",
         adapter: builderB,
         probe: available(),
+        costProbe: costWithin(),
       },
       {
         binding_id: "reviewer-main",
         role: "reviewer",
         adapter: reviewer,
         probe: available(),
+      costProbe: costWithin(),
       },
     ];
 
@@ -584,7 +636,7 @@ test("S3 order: unavailable higher priority skipped on initial select; pin block
       {
         owner: "disp",
         leaseMs: 60_000,
-        routing: { registry, catalog },
+        routing: { registry, catalog, costConstraint: TEST_COST_CONSTRAINT },
       },
     );
 
@@ -676,18 +728,21 @@ test("null binding_id provenance fails closed in routed mode", async () => {
         role: "program_control",
         adapter: pc,
         probe: available(),
+      costProbe: costWithin(),
       },
       {
         binding_id: "builder-a",
         role: "builder",
         adapter: builder,
         probe: available(),
+      costProbe: costWithin(),
       },
       {
         binding_id: "reviewer-main",
         role: "reviewer",
         adapter: reviewer,
         probe: available(),
+      costProbe: costWithin(),
       },
     ];
     const dispatcher = new Dispatcher(
@@ -696,7 +751,7 @@ test("null binding_id provenance fails closed in routed mode", async () => {
       {
         owner: "disp",
         leaseMs: 60_000,
-        routing: { registry, catalog },
+        routing: { registry, catalog, costConstraint: TEST_COST_CONSTRAINT },
       },
     );
 
@@ -800,18 +855,21 @@ test("NO_ELIGIBLE_BINDING / NO_AVAILABLE_BINDING: no dispatch, recovery, preserv
         role: "program_control",
         adapter: pc,
         probe: available(),
+      costProbe: costWithin(),
       },
       {
         binding_id: "builder-weak",
         role: "builder",
         adapter: weakBuilder,
         probe: available(),
+      costProbe: costWithin(),
       },
       {
         binding_id: "reviewer-main",
         role: "reviewer",
         adapter: reviewer,
         probe: available(),
+      costProbe: costWithin(),
       },
     ];
     const dispatcher = new Dispatcher(
@@ -820,7 +878,7 @@ test("NO_ELIGIBLE_BINDING / NO_AVAILABLE_BINDING: no dispatch, recovery, preserv
       {
         owner: "disp",
         leaseMs: 60_000,
-        routing: { registry, catalog },
+        routing: { registry, catalog, costConstraint: TEST_COST_CONSTRAINT },
       },
     );
 
@@ -866,12 +924,14 @@ test("NO_AVAILABLE_BINDING preserves CREDENTIAL / AGENT / UNKNOWN without raw de
       role: "builder",
       adapter: builderA,
       probe: unavailable("cred", "secret-cred-path"),
+      costProbe: costWithin(),
     },
     {
       binding_id: "builder-b",
       role: "builder",
       adapter: builderB,
       probe: unavailable("agent", "secret-agent-msg"),
+      costProbe: costWithin(),
     },
   ]);
   // Also include an eligible registry binding without catalog → UNKNOWN
@@ -881,6 +941,7 @@ test("NO_AVAILABLE_BINDING preserves CREDENTIAL / AGENT / UNKNOWN without raw de
     registry,
     catalog,
     request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
   });
   assert.equal(outcome.status, "BLOCKED");
   if (outcome.status === "BLOCKED") {
@@ -915,12 +976,14 @@ test("pinned binding resolve does not select alternate available binding", async
       role: "builder",
       adapter: builderA,
       probe: unavailable("agent"),
+      costProbe: costWithin(),
     },
     {
       binding_id: "builder-b",
       role: "builder",
       adapter: builderB,
       probe: available(),
+      costProbe: costWithin(),
     },
   ]);
   const pinned = await resolvePinnedBinding({
@@ -928,6 +991,7 @@ test("pinned binding resolve does not select alternate available binding", async
     catalog,
     request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
     pinnedBindingId: "builder-a",
+    costConstraint: TEST_COST_CONSTRAINT,
   });
   assert.equal(pinned.status, "BLOCKED");
   if (pinned.status === "BLOCKED") {
@@ -956,18 +1020,21 @@ test("new request_id may reselect independently (semantic boundary)", async () =
         aOk
           ? { ok: true, authReady: true }
           : { ok: false, authReady: false },
+      costProbe: costWithin(),
     },
     {
       binding_id: "builder-b",
       role: "builder",
       adapter: builderB,
       probe: available(),
+      costProbe: costWithin(),
     },
   ]);
   const first = await selectRoutedBinding({
     registry,
     catalog,
     request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
   });
   assert.equal(first.status, "SELECTED");
   if (first.status === "SELECTED") {
@@ -978,6 +1045,7 @@ test("new request_id may reselect independently (semantic boundary)", async () =
     registry,
     catalog,
     request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
   });
   assert.equal(second.status, "SELECTED");
   if (second.status === "SELECTED") {
@@ -1000,6 +1068,7 @@ test("canary wiring references current registry binding ids", () => {
   assert.match(canarySrc, /loadProviderRegistry/);
   assert.match(canarySrc, /defaultProviderRegistryPath/);
   assert.match(canarySrc, /routing:\s*\{/);
+  assert.match(canarySrc, /costConstraint/);
   assert.match(canarySrc, /pcBinding\.bindingId/);
   assert.match(canarySrc, /builderBinding\.bindingId/);
   assert.match(canarySrc, /reviewerBinding\.bindingId/);
@@ -1023,18 +1092,21 @@ test("Dispatcher constructor fail-closed on invalid catalog", () => {
             leaseMs: 60_000,
             routing: {
               registry,
+              costConstraint: TEST_COST_CONSTRAINT,
               catalog: [
                 {
                   binding_id: "builder-a",
                   role: "builder",
                   adapter: builder,
                   probe: available(),
+                  costProbe: costWithin(),
                 },
                 {
                   binding_id: "builder-a",
                   role: "builder",
                   adapter: builder,
                   probe: available(),
+                  costProbe: costWithin(),
                 },
               ],
             },
@@ -1080,18 +1152,21 @@ test("reviewer routed selection attributes codex-cli-style binding_id", async ()
         role: "program_control",
         adapter: pc,
         probe: available(),
+      costProbe: costWithin(),
       },
       {
         binding_id: "builder-a",
         role: "builder",
         adapter: builder,
         probe: available(),
+      costProbe: costWithin(),
       },
       {
         binding_id: "reviewer-main",
         role: "reviewer",
         adapter: reviewer,
         probe: available(),
+      costProbe: costWithin(),
       },
     ];
     const dispatcher = new Dispatcher(
@@ -1100,7 +1175,7 @@ test("reviewer routed selection attributes codex-cli-style binding_id", async ()
       {
         owner: "disp",
         leaseMs: 60_000,
-        routing: { registry, catalog },
+        routing: { registry, catalog, costConstraint: TEST_COST_CONSTRAINT },
       },
     );
     const last = await dispatcher.runUntilStable(cycle.cycle_id);
@@ -1158,18 +1233,21 @@ test("S9: no quotaProbe preserves S5 selected binding (UNKNOWN fallback)", async
       role: "builder",
       adapter: builderA,
       probe: available(),
+      costProbe: costWithin(),
     },
     {
       binding_id: "builder-b",
       role: "builder",
       adapter: builderB,
       probe: available(),
+      costProbe: costWithin(),
     },
   ]);
   const outcome = await selectRoutedBinding({
     registry,
     catalog,
     request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
   });
   assert.equal(outcome.status, "SELECTED");
   if (outcome.status === "SELECTED") {
@@ -1189,12 +1267,14 @@ test("S9: higher-priority UNKNOWN + lower-priority AVAILABLE → AVAILABLE", asy
       role: "builder",
       adapter: builderA,
       probe: available(),
+      costProbe: costWithin(),
     },
     {
       binding_id: "builder-b",
       role: "builder",
       adapter: builderB,
       probe: available(),
+      costProbe: costWithin(),
       quotaProbe: () => {
         probedB = true;
         return { exhausted: false };
@@ -1205,6 +1285,7 @@ test("S9: higher-priority UNKNOWN + lower-priority AVAILABLE → AVAILABLE", asy
     registry,
     catalog,
     request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
   });
   assert.equal(outcome.status, "SELECTED");
   if (outcome.status === "SELECTED") {
@@ -1224,6 +1305,7 @@ test("S9: higher-priority EXHAUSTED + lower-priority UNKNOWN → UNKNOWN", async
       role: "builder",
       adapter: builderA,
       probe: available(),
+      costProbe: costWithin(),
       quotaProbe: quotaExhausted(),
     },
     {
@@ -1231,12 +1313,14 @@ test("S9: higher-priority EXHAUSTED + lower-priority UNKNOWN → UNKNOWN", async
       role: "builder",
       adapter: builderB,
       probe: available(),
+      costProbe: costWithin(),
     },
   ]);
   const outcome = await selectRoutedBinding({
     registry,
     catalog,
     request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
   });
   assert.equal(outcome.status, "SELECTED");
   if (outcome.status === "SELECTED") {
@@ -1255,6 +1339,7 @@ test("S9: higher-priority EXHAUSTED + lower-priority AVAILABLE → AVAILABLE", a
       role: "builder",
       adapter: builderA,
       probe: available(),
+      costProbe: costWithin(),
       quotaProbe: quotaExhausted(),
     },
     {
@@ -1262,6 +1347,7 @@ test("S9: higher-priority EXHAUSTED + lower-priority AVAILABLE → AVAILABLE", a
       role: "builder",
       adapter: builderB,
       probe: available(),
+      costProbe: costWithin(),
       quotaProbe: quotaAvailable(),
     },
   ]);
@@ -1269,6 +1355,7 @@ test("S9: higher-priority EXHAUSTED + lower-priority AVAILABLE → AVAILABLE", a
     registry,
     catalog,
     request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
   });
   assert.equal(outcome.status, "SELECTED");
   if (outcome.status === "SELECTED") {
@@ -1287,6 +1374,7 @@ test("S9: all available candidates EXHAUSTED → NO_QUOTA_ROUTABLE_BINDING", asy
       role: "builder",
       adapter: builderA,
       probe: available(),
+      costProbe: costWithin(),
       quotaProbe: quotaExhausted(),
     },
     {
@@ -1294,6 +1382,7 @@ test("S9: all available candidates EXHAUSTED → NO_QUOTA_ROUTABLE_BINDING", asy
       role: "builder",
       adapter: builderB,
       probe: available(),
+      costProbe: costWithin(),
       quotaProbe: quotaExhausted(),
     },
   ]);
@@ -1301,6 +1390,7 @@ test("S9: all available candidates EXHAUSTED → NO_QUOTA_ROUTABLE_BINDING", asy
     registry,
     catalog,
     request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
   });
   assert.equal(outcome.status, "BLOCKED");
   if (outcome.status === "BLOCKED") {
@@ -1321,10 +1411,12 @@ test("S9: quota probe exception / malformed → UNKNOWN fallback", async () => {
         role: "builder",
         adapter: builderA,
         probe: available(),
+        costProbe: costWithin(),
         quotaProbe: quotaThrows(),
       },
     ]),
     request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
   });
   assert.equal(throwOutcome.status, "SELECTED");
   if (throwOutcome.status === "SELECTED") {
@@ -1340,10 +1432,12 @@ test("S9: quota probe exception / malformed → UNKNOWN fallback", async () => {
         role: "builder",
         adapter: builderB,
         probe: available(),
+        costProbe: costWithin(),
         quotaProbe: quotaMalformed(),
       },
     ]),
     request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
   });
   assert.equal(badOutcome.status, "SELECTED");
   if (badOutcome.status === "SELECTED") {
@@ -1363,6 +1457,7 @@ test("S9: availability-unavailable binding quotaProbe is not invoked", async () 
       role: "builder",
       adapter: builderA,
       probe: unavailable("agent"),
+      costProbe: costWithin(),
       quotaProbe: () => {
         aQuota += 1;
         return { exhausted: false };
@@ -1373,6 +1468,7 @@ test("S9: availability-unavailable binding quotaProbe is not invoked", async () 
       role: "builder",
       adapter: builderB,
       probe: available(),
+      costProbe: costWithin(),
       quotaProbe: quotaAvailable(),
     },
   ]);
@@ -1380,6 +1476,7 @@ test("S9: availability-unavailable binding quotaProbe is not invoked", async () 
     registry,
     catalog,
     request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
   });
   assert.equal(outcome.status, "SELECTED");
   if (outcome.status === "SELECTED") {
@@ -1409,6 +1506,7 @@ test("S9: pinned AVAILABLE / UNKNOWN remain pinned; EXHAUSTED blocks without alt
         role: "builder",
         adapter: builderA,
         probe: available(),
+        costProbe: costWithin(),
         quotaProbe: quotaAvailable(),
       },
       {
@@ -1416,9 +1514,11 @@ test("S9: pinned AVAILABLE / UNKNOWN remain pinned; EXHAUSTED blocks without alt
         role: "builder",
         adapter: builderB,
         probe: available(),
+        costProbe: costWithin(),
         quotaProbe: quotaAvailable(),
       },
     ]),
+    costConstraint: TEST_COST_CONSTRAINT,
   });
   assert.equal(avail.status, "SELECTED");
   if (avail.status === "SELECTED") {
@@ -1434,15 +1534,18 @@ test("S9: pinned AVAILABLE / UNKNOWN remain pinned; EXHAUSTED blocks without alt
         role: "builder",
         adapter: builderA,
         probe: available(),
+      costProbe: costWithin(),
       },
       {
         binding_id: "builder-b",
         role: "builder",
         adapter: builderB,
         probe: available(),
+        costProbe: costWithin(),
         quotaProbe: quotaAvailable(),
       },
     ]),
+    costConstraint: TEST_COST_CONSTRAINT,
   });
   assert.equal(unknown.status, "SELECTED");
   if (unknown.status === "SELECTED") {
@@ -1458,6 +1561,7 @@ test("S9: pinned AVAILABLE / UNKNOWN remain pinned; EXHAUSTED blocks without alt
         role: "builder",
         adapter: builderA,
         probe: available(),
+        costProbe: costWithin(),
         quotaProbe: quotaExhausted(),
       },
       {
@@ -1465,9 +1569,11 @@ test("S9: pinned AVAILABLE / UNKNOWN remain pinned; EXHAUSTED blocks without alt
         role: "builder",
         adapter: builderB,
         probe: available(),
+        costProbe: costWithin(),
         quotaProbe: quotaAvailable(),
       },
     ]),
+    costConstraint: TEST_COST_CONSTRAINT,
   });
   assert.equal(exhausted.status, "BLOCKED");
   if (exhausted.status === "BLOCKED") {
@@ -1519,12 +1625,14 @@ test("S9: NO_QUOTA_ROUTABLE_BINDING enters recovery with sanitized quota evidenc
         role: "program_control",
         adapter: pc,
         probe: available(),
+      costProbe: costWithin(),
       },
       {
         binding_id: "builder-a",
         role: "builder",
         adapter: builderA,
         probe: available(),
+        costProbe: costWithin(),
         quotaProbe: quotaExhausted(),
       },
       {
@@ -1532,6 +1640,7 @@ test("S9: NO_QUOTA_ROUTABLE_BINDING enters recovery with sanitized quota evidenc
         role: "builder",
         adapter: builderB,
         probe: available(),
+        costProbe: costWithin(),
         quotaProbe: quotaExhausted(),
       },
       {
@@ -1539,12 +1648,13 @@ test("S9: NO_QUOTA_ROUTABLE_BINDING enters recovery with sanitized quota evidenc
         role: "reviewer",
         adapter: reviewer,
         probe: available(),
+      costProbe: costWithin(),
       },
     ];
     const dispatcher = new Dispatcher(
       handoff,
       { programControl: pc, builder: builderA, reviewer },
-      { owner: "disp", leaseMs: 60_000, routing: { registry, catalog } },
+      { owner: "disp", leaseMs: 60_000, routing: { registry, catalog, costConstraint: TEST_COST_CONSTRAINT } },
     );
     const last = await dispatcher.runUntilStable(cycle.cycle_id);
     assert.equal(last.action, "routing_blocked");
@@ -1577,6 +1687,553 @@ test("S9: NO_QUOTA_ROUTABLE_BINDING enters recovery with sanitized quota evidenc
         .get() as { c: number }
     ).c;
     assert.equal(dispatchCount, 0);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("S11: missing/malformed costConstraint → ROUTING_CONFIG_INVALID", () => {
+  const dir = tempState();
+  try {
+    const { handoff, envClock } = openHarness(dir);
+    const pc = new FakeProgramControlAdapter([], envClock);
+    const builder = new FakeBuilderAdapter([], envClock);
+    const reviewer = new FakeReviewerAdapter([], envClock);
+    const registry = multiBuilderRegistry();
+    const catalog: RuntimeCatalogEntry[] = [
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builder,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+    ];
+    assert.throws(
+      () =>
+        new Dispatcher(
+          handoff,
+          { programControl: pc, builder, reviewer },
+          {
+            owner: "disp",
+            leaseMs: 60_000,
+            routing: {
+              registry,
+              catalog,
+              costConstraint: undefined as unknown as typeof TEST_COST_CONSTRAINT,
+            },
+          },
+        ),
+      (err: unknown) =>
+        err instanceof ControlError && err.code === "ROUTING_CONFIG_INVALID",
+    );
+    assert.throws(
+      () =>
+        new Dispatcher(
+          handoff,
+          { programControl: pc, builder, reviewer },
+          {
+            owner: "disp",
+            leaseMs: 60_000,
+            routing: {
+              registry,
+              catalog,
+              costConstraint: {
+                max_estimate: {
+                  amount_decimal: "1.2.3",
+                  currency_code: "USD",
+                },
+              },
+            },
+          },
+        ),
+      (err: unknown) =>
+        err instanceof ControlError && err.code === "ROUTING_CONFIG_INVALID",
+    );
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("S11: missing costProbe / exception / malformed → NO_COST_VERIFIABLE_BINDING", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const missing = await selectRoutedBinding({
+    registry,
+    catalog: catalogByBindingId([
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+      },
+    ]),
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
+  });
+  assert.equal(missing.status, "BLOCKED");
+  if (missing.status === "BLOCKED") {
+    assert.equal(missing.reason, "NO_COST_VERIFIABLE_BINDING");
+    assert.equal(missing.cost_observations[0]?.state, "UNKNOWN");
+  }
+
+  const thrown = await selectRoutedBinding({
+    registry,
+    catalog: catalogByBindingId([
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+        costProbe: costThrows(),
+      },
+    ]),
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
+  });
+  assert.equal(thrown.status, "BLOCKED");
+  if (thrown.status === "BLOCKED") {
+    assert.equal(thrown.reason, "NO_COST_VERIFIABLE_BINDING");
+  }
+
+  const bad = await selectRoutedBinding({
+    registry,
+    catalog: catalogByBindingId([
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+        costProbe: costMalformed(),
+      },
+    ]),
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
+  });
+  assert.equal(bad.status, "BLOCKED");
+  if (bad.status === "BLOCKED") {
+    assert.equal(bad.reason, "NO_COST_VERIFIABLE_BINDING");
+  }
+});
+
+test("S11: cost WITHIN preferred by quota order; OVER/UNKNOWN/mismatch skipped; no cheapest", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+
+  const overThenWithin = await selectRoutedBinding({
+    registry,
+    catalog: catalogByBindingId([
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+        costProbe: costOver(),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        costProbe: costWithin("50"),
+      },
+    ]),
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
+  });
+  assert.equal(overThenWithin.status, "SELECTED");
+  if (overThenWithin.status === "SELECTED") {
+    assert.equal(overThenWithin.binding_id, "builder-b");
+    assert.equal(overThenWithin.cost_state, "ESTIMATE_AVAILABLE");
+    assert.equal(overThenWithin.estimate.amount_decimal, "50");
+    assert.equal(overThenWithin.quota_state, "UNKNOWN");
+  }
+
+  // Cheaper lower-priority must not beat higher-priority WITHIN
+  const noCheapest = await selectRoutedBinding({
+    registry,
+    catalog: catalogByBindingId([
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+        costProbe: costWithin("90"),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        costProbe: costWithin("1"),
+      },
+    ]),
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
+  });
+  assert.equal(noCheapest.status, "SELECTED");
+  if (noCheapest.status === "SELECTED") {
+    assert.equal(noCheapest.binding_id, "builder-a");
+    assert.equal(noCheapest.estimate.amount_decimal, "90");
+  }
+
+  const mismatch = await selectRoutedBinding({
+    registry,
+    catalog: catalogByBindingId([
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+        costProbe: costMismatch(),
+      },
+    ]),
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
+  });
+  assert.equal(mismatch.status, "BLOCKED");
+  if (mismatch.status === "BLOCKED") {
+    assert.equal(mismatch.reason, "NO_COST_VERIFIABLE_BINDING");
+  }
+});
+
+test("S11: EXHAUSTED binding costProbe is not invoked", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  let aCost = 0;
+  const outcome = await selectRoutedBinding({
+    registry,
+    catalog: catalogByBindingId([
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+        quotaProbe: quotaExhausted(),
+        costProbe: () => {
+          aCost += 1;
+          return { estimate: { amount_decimal: "1", currency_code: "USD" } };
+        },
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        quotaProbe: quotaAvailable(),
+        costProbe: costWithin(),
+      },
+    ]),
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
+  });
+  assert.equal(outcome.status, "SELECTED");
+  if (outcome.status === "SELECTED") {
+    assert.equal(outcome.binding_id, "builder-b");
+  }
+  assert.equal(aCost, 0);
+});
+
+test("S11: pin WITHIN remains; UNKNOWN/OVER/mismatch → PINNED_BINDING_COST_NOT_VERIFIABLE without alternate", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const base = {
+    registry,
+    request: {
+      role: "builder" as const,
+      requiredCapabilities: [...BUILD_CAPS],
+    },
+    pinnedBindingId: "builder-a",
+    costConstraint: TEST_COST_CONSTRAINT,
+  };
+
+  const within = await resolvePinnedBinding({
+    ...base,
+    catalog: catalogByBindingId([
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+        costProbe: costWithin("2"),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        costProbe: costWithin("1"),
+      },
+    ]),
+  });
+  assert.equal(within.status, "SELECTED");
+  if (within.status === "SELECTED") {
+    assert.equal(within.binding_id, "builder-a");
+    assert.equal(within.cost_state, "ESTIMATE_AVAILABLE");
+    assert.equal(within.estimate.amount_decimal, "2");
+  }
+
+  for (const probe of [undefined, costOver(), costMismatch(), costThrows()]) {
+    const blocked = await resolvePinnedBinding({
+      ...base,
+      catalog: catalogByBindingId([
+        {
+          binding_id: "builder-a",
+          role: "builder",
+          adapter: builderA,
+          probe: available(),
+          ...(probe ? { costProbe: probe } : {}),
+        },
+        {
+          binding_id: "builder-b",
+          role: "builder",
+          adapter: builderB,
+          probe: available(),
+          costProbe: costWithin(),
+        },
+      ]),
+    });
+    assert.equal(blocked.status, "BLOCKED");
+    if (blocked.status === "BLOCKED") {
+      assert.equal(blocked.reason, "PINNED_BINDING_COST_NOT_VERIFIABLE");
+      assert.equal(blocked.pinned_binding_id, "builder-a");
+    }
+  }
+});
+
+test("S11: sanitizeCostRoutingObservations strips raw detail; keeps estimate", async () => {
+  const { sanitizeCostRoutingObservations, sanitizeCostConstraintSnapshot } =
+    await import("./routing.js");
+  const cleaned = sanitizeCostRoutingObservations([
+    {
+      binding_id: "x",
+      state: "ESTIMATE_AVAILABLE",
+      estimate: { amount_decimal: "1.50", currency_code: "USD" },
+      detail: "secret rate card",
+    },
+    {
+      binding_id: "y",
+      state: "UNKNOWN",
+      detail: "probe timeout",
+    },
+  ]);
+  assert.deepEqual(cleaned, [
+    {
+      binding_id: "x",
+      state: "ESTIMATE_AVAILABLE",
+      estimate: { amount_decimal: "1.50", currency_code: "USD" },
+    },
+    { binding_id: "y", state: "UNKNOWN" },
+  ]);
+  assert.equal("detail" in cleaned[0]!, false);
+  const snap = sanitizeCostConstraintSnapshot(TEST_COST_CONSTRAINT);
+  assert.deepEqual(snap, {
+    max_estimate: { amount_decimal: "100", currency_code: "USD" },
+  });
+});
+
+test("S11: NO_COST_VERIFIABLE_BINDING recovery evidence includes cost snapshot; no dispatch", async () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock } = openHarness(dir);
+    const project = store.createProject("s11-cost-block");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-004",
+      baseSha: "base",
+    });
+    const pc = new FakeProgramControlAdapter(
+      [
+        pcDecision({
+          decision: "BUILD",
+          authorized_finding_ids: [],
+          install_policy: null,
+        }),
+      ],
+      envClock,
+    );
+    const builderA = new FakeBuilderAdapter([], envClock);
+    const builderB = new FakeBuilderAdapter([], envClock);
+    const reviewer = new FakeReviewerAdapter([], envClock);
+    const registry = multiBuilderRegistry();
+    const catalog: RuntimeCatalogEntry[] = [
+      {
+        binding_id: "pc-main",
+        role: "program_control",
+        adapter: pc,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+        costProbe: costOver(),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        costProbe: costOver(),
+      },
+      {
+        binding_id: "reviewer-main",
+        role: "reviewer",
+        adapter: reviewer,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+    ];
+    const dispatcher = new Dispatcher(
+      handoff,
+      { programControl: pc, builder: builderA, reviewer },
+      {
+        owner: "disp",
+        leaseMs: 60_000,
+        routing: {
+          registry,
+          catalog,
+          costConstraint: TEST_COST_CONSTRAINT,
+        },
+      },
+    );
+    const last = await dispatcher.runUntilStable(cycle.cycle_id);
+    assert.equal(last.action, "routing_blocked");
+    assert.equal(builderA.invocations, 0);
+    assert.equal(builderB.invocations, 0);
+    const block = handoff.store
+      .listEvents()
+      .find((e) => e.event_type === "cycle.routing_blocked");
+    assert.ok(block);
+    const payload = block!.payload as {
+      router_status: string;
+      cost_observations: {
+        binding_id: string;
+        state: string;
+        estimate?: { amount_decimal: string; currency_code: string };
+        detail?: string;
+      }[];
+      cost_constraint: {
+        max_estimate: { amount_decimal: string; currency_code: string };
+      };
+    };
+    assert.equal(payload.router_status, "NO_COST_VERIFIABLE_BINDING");
+    assert.ok(Array.isArray(payload.cost_observations));
+    assert.ok(
+      payload.cost_observations.every(
+        (o) =>
+          (o.state === "ESTIMATE_AVAILABLE" || o.state === "UNKNOWN") &&
+          !("detail" in o && o.detail),
+      ),
+    );
+    assert.deepEqual(payload.cost_constraint, {
+      max_estimate: { amount_decimal: "100", currency_code: "USD" },
+    });
+    const dispatchCount = (
+      handoff.store.db
+        .prepare(
+          `SELECT COUNT(*) AS c FROM dispatches WHERE target_role = 'builder'`,
+        )
+        .get() as { c: number }
+    ).c;
+    assert.equal(dispatchCount, 0);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("S11: valid CLAIMED lease reuses binding without cost reprobe", async () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock } = openHarness(dir);
+    const project = store.createProject("s11-claimed");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-004",
+      baseSha: "base",
+    });
+    const pc = new FakeProgramControlAdapter(
+      [
+        pcDecision({
+          decision: "BUILD",
+          install_policy: { on_builder_candidate: "AWAIT_PC" },
+        }),
+      ],
+      envClock,
+    );
+    let costProbes = 0;
+    const builder = new FakeBuilderAdapter(
+      [{ status: "CANDIDATE_READY", candidate_sha: "sha-claimed" }],
+      envClock,
+    );
+    builder.identity = { adapter_id: "fake-builder", role: "builder" };
+    const reviewer = new FakeReviewerAdapter([], envClock);
+    const registry = multiBuilderRegistry();
+    const countingCost: CostProbeFn = () => {
+      costProbes += 1;
+      return { estimate: { amount_decimal: "1", currency_code: "USD" } };
+    };
+    const catalog: RuntimeCatalogEntry[] = [
+      {
+        binding_id: "pc-main",
+        role: "program_control",
+        adapter: pc,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builder,
+        probe: available(),
+        costProbe: countingCost,
+      },
+      {
+        binding_id: "reviewer-main",
+        role: "reviewer",
+        adapter: reviewer,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+    ];
+    const dispatcher = new Dispatcher(
+      handoff,
+      { programControl: pc, builder, reviewer },
+      {
+        owner: "disp",
+        leaseMs: 60_000,
+        routing: {
+          registry,
+          catalog,
+          costConstraint: TEST_COST_CONSTRAINT,
+        },
+      },
+    );
+    let last = await dispatcher.step(cycle.cycle_id);
+    while (last.cycle.state !== "DISPATCHING_BUILD") {
+      last = await dispatcher.step(cycle.cycle_id);
+      if (last.cycle.state === "RECOVERY_REQUIRED") break;
+    }
+    assert.equal(last.cycle.state, "DISPATCHING_BUILD");
+    const reqId = last.cycle.current_request_id!;
+    // Pre-claim with attribution so resolveRoutedAdapter takes CLAIMED reuse path (A-030).
+    handoff.claimDispatch({
+      cycleId: cycle.cycle_id,
+      requestId: reqId,
+      targetRole: "builder",
+      owner: "disp",
+      leaseMs: 60_000,
+      bindingId: "builder-a",
+    });
+    assert.equal(costProbes, 0);
+    last = await dispatcher.step(cycle.cycle_id);
+    assert.equal(costProbes, 0);
+    assert.equal(builder.invocations, 1);
   } finally {
     cleanup(dir);
   }

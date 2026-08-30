@@ -361,24 +361,36 @@ async function main(): Promise<number> {
     const providerRegistry = loadProviderRegistry(
       defaultProviderRegistryPath(repoRoot),
     );
+    // S11 live cost cutover: mandatory ceiling + verifiable estimate probes.
+    // Ceiling is evaluation input only (not spend authority). Explicit "0" estimates.
+    const canaryCostConstraint = {
+      max_estimate: { amount_decimal: "999999", currency_code: "USD" },
+    } as const;
+    const canaryCostProbe = () => ({
+      estimate: { amount_decimal: "0", currency_code: "USD" },
+    });
+
     const routingCatalog: RuntimeCatalogEntry[] = [
       {
         binding_id: pcBinding.bindingId,
         role: "program_control",
         adapter: pcGateway,
         probe: () => pcGateway.refreshProbe(),
+        costProbe: canaryCostProbe,
       },
       {
         binding_id: builderBinding.bindingId,
         role: "builder",
         adapter: builderGateway,
         probe: () => builderGateway.refreshProbe(),
+        costProbe: canaryCostProbe,
       },
       {
         binding_id: reviewerBinding.bindingId,
         role: "reviewer",
         adapter: reviewerGateway,
         probe: () => reviewerGateway.refreshProbe(),
+        costProbe: canaryCostProbe,
       },
     ];
 
@@ -396,6 +408,7 @@ async function main(): Promise<number> {
         routing: {
           registry: providerRegistry,
           catalog: routingCatalog,
+          costConstraint: canaryCostConstraint,
         },
         gitReality: async (ctx) => {
           const artifacts = ensureExecutionDir(

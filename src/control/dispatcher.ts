@@ -29,7 +29,10 @@ import { assertPcDecisionAuthority } from "../program-control/authority.js";
 import {
   catalogByBindingId,
   eligibilityRequestFor,
+  requireCostRoutingConstraint,
   resolvePinnedBinding,
+  sanitizeCostConstraintSnapshot,
+  sanitizeCostRoutingObservations,
   sanitizeQuotaRoutingObservations,
   sanitizeRoutingObservations,
   selectRoutedBinding,
@@ -37,7 +40,12 @@ import {
   type RoutingConfig,
   type RuntimeCatalogEntry,
 } from "./routing.js";
-import type { QuotaObservation, RoutableRole } from "../router/index.js";
+import type {
+  CostObservation,
+  CostRoutingConstraint,
+  QuotaObservation,
+  RoutableRole,
+} from "../router/index.js";
 
 export interface DispatcherAdapters {
   programControl: ProgramControlAdapter;
@@ -107,6 +115,7 @@ export class Dispatcher {
   ) {
     if (options.routing) {
       validateRuntimeCatalog(options.routing.registry, options.routing.catalog);
+      requireCostRoutingConstraint(options.routing.costConstraint);
       this.catalogValidated = true;
       this.catalogIndex = catalogByBindingId(options.routing.catalog);
     } else {
@@ -117,6 +126,7 @@ export class Dispatcher {
   private ensureRoutingReady(): {
     registry: RoutingConfig["registry"];
     catalog: Map<string, RuntimeCatalogEntry>;
+    costConstraint: CostRoutingConstraint;
   } {
     const routing = this.options.routing;
     if (!routing || !this.catalogIndex) {
@@ -129,7 +139,12 @@ export class Dispatcher {
       validateRuntimeCatalog(routing.registry, routing.catalog);
       this.catalogValidated = true;
     }
-    return { registry: routing.registry, catalog: this.catalogIndex };
+    const costConstraint = requireCostRoutingConstraint(routing.costConstraint);
+    return {
+      registry: routing.registry,
+      catalog: this.catalogIndex,
+      costConstraint,
+    };
   }
   recover(now?: Date): number {
     return this.handoff.recoverExpiredDispatches(now ?? this.handoff.store.now());
@@ -323,26 +338,38 @@ export class Dispatcher {
     pinnedBindingId: string | null;
     observations: Parameters<typeof sanitizeRoutingObservations>[0];
     quotaObservations?: readonly QuotaObservation[];
+    costObservations?: readonly CostObservation[];
+    costConstraint?: CostRoutingConstraint;
   }): StepResult {
     const recoveryTarget =
       args.role === "builder" || args.role === "reviewer"
         ? args.request.request_id!
         : null;
+    const evidencePayload: Record<string, unknown> = {
+      target_role: args.role,
+      router_status: args.reason,
+      required_capabilities: [...args.request.body.required_capabilities],
+      pinned_binding_id: args.pinnedBindingId,
+      observations: sanitizeRoutingObservations(args.observations),
+      quota_observations: sanitizeQuotaRoutingObservations(
+        args.quotaObservations ?? [],
+      ),
+      cost_observations: sanitizeCostRoutingObservations(
+        args.costObservations ?? [],
+      ),
+    };
+    if (args.costConstraint !== undefined) {
+      // Evaluation snapshot only — not spend authority.
+      evidencePayload.cost_constraint = sanitizeCostConstraintSnapshot(
+        args.costConstraint,
+      );
+    }
     this.handoff.enterRecovery({
       cycleId: args.cycle.cycle_id,
       requestId: recoveryTarget,
       reason: args.reason,
       evidenceEventType: "cycle.routing_blocked",
-      evidencePayload: {
-        target_role: args.role,
-        router_status: args.reason,
-        required_capabilities: [...args.request.body.required_capabilities],
-        pinned_binding_id: args.pinnedBindingId,
-        observations: sanitizeRoutingObservations(args.observations),
-        quota_observations: sanitizeQuotaRoutingObservations(
-          args.quotaObservations ?? [],
-        ),
-      },
+      evidencePayload,
     });
     return {
       cycle: this.handoff.requireCycle(args.cycle.cycle_id),
@@ -364,13 +391,14 @@ export class Dispatcher {
     | { ok: true; entry: RuntimeCatalogEntry; bindingId: string }
     | { ok: false; step: StepResult }
   > {
-    const { registry, catalog } = this.ensureRoutingReady();
+    const { registry, catalog, costConstraint } = this.ensureRoutingReady();
     const eligibility = eligibilityRequestFor(
       role as RoutableRole,
       request.body.required_capabilities,
     );
 
-    // Live same-owner CLAIMED lease: reuse attributed binding; do not reselect.
+    // Live same-owner CLAIMED lease (A-030): reuse attributed binding;
+    // NO availability/quota/cost reprobe; NO constraint reevaluation.
     if (leaseValid && existing) {
       if (existing.binding_id == null) {
         return {
@@ -382,6 +410,7 @@ export class Dispatcher {
             reason: "ROUTING_PROVENANCE_MISSING",
             pinnedBindingId: null,
             observations: [],
+            costConstraint,
           }),
         };
       }
@@ -398,6 +427,7 @@ export class Dispatcher {
             observations: [
               { binding_id: existing.binding_id, state: "UNKNOWN" },
             ],
+            costConstraint,
           }),
         };
       }
@@ -415,6 +445,7 @@ export class Dispatcher {
             reason: "ROUTING_PROVENANCE_MISSING",
             pinnedBindingId: null,
             observations: [],
+            costConstraint,
           }),
         };
       }
@@ -423,6 +454,7 @@ export class Dispatcher {
         catalog,
         request: eligibility,
         pinnedBindingId: existing.binding_id,
+        costConstraint,
       });
       if (pinned.status === "BLOCKED") {
         return {
@@ -435,6 +467,8 @@ export class Dispatcher {
             pinnedBindingId: pinned.pinned_binding_id,
             observations: pinned.observations,
             quotaObservations: pinned.quota_observations,
+            costObservations: pinned.cost_observations,
+            costConstraint,
           }),
         };
       }
@@ -449,6 +483,7 @@ export class Dispatcher {
       registry,
       catalog,
       request: eligibility,
+      costConstraint,
     });
     if (selected.status === "BLOCKED") {
       return {
@@ -461,6 +496,8 @@ export class Dispatcher {
           pinnedBindingId: selected.pinned_binding_id,
           observations: selected.observations,
           quotaObservations: selected.quota_observations,
+          costObservations: selected.cost_observations,
+          costConstraint,
         }),
       };
     }

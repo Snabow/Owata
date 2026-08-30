@@ -57,5 +57,6 @@ export {
 export {
   applyCostRoutingConstraint,
   compareDecimalAmounts,
+  isValidCostRoutingConstraint,
   selectBindingWithQuotaAndCost,
 } from "./cost-policy.js";

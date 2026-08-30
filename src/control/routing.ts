@@ -7,11 +7,18 @@ import type {
 } from "./adapters.js";
 import type { Capability } from "./protocol.js";
 import {
+  applyCostRoutingConstraint,
   filterEligibleBindings,
+  isValidCostRoutingConstraint,
   observeBindingAvailability,
+  observeBindingCost,
   observeBindingQuota,
-  selectBindingWithQuota,
+  selectBindingWithQuotaAndCost,
   type AvailabilityObservation,
+  type CostEstimate,
+  type CostObservation,
+  type CostProbeResult,
+  type CostRoutingConstraint,
   type EligibilityRequest,
   type ProviderRegistry,
   type QuotaObservation,
@@ -29,6 +36,11 @@ export type QuotaProbeFn = () =>
   | QuotaProbeResult
   | Promise<QuotaProbeResult>;
 
+/** Optional live cost probe (A-027). Missing/exception/malformed → UNKNOWN. */
+export type CostProbeFn = () =>
+  | CostProbeResult
+  | Promise<CostProbeResult>;
+
 export type RuntimeCatalogEntry =
   | {
       binding_id: string;
@@ -36,6 +48,7 @@ export type RuntimeCatalogEntry =
       adapter: ProgramControlAdapter;
       probe: AvailabilityProbeFn;
       quotaProbe?: QuotaProbeFn;
+      costProbe?: CostProbeFn;
     }
   | {
       binding_id: string;
@@ -43,6 +56,7 @@ export type RuntimeCatalogEntry =
       adapter: BuilderAdapter;
       probe: AvailabilityProbeFn;
       quotaProbe?: QuotaProbeFn;
+      costProbe?: CostProbeFn;
     }
   | {
       binding_id: string;
@@ -50,18 +64,22 @@ export type RuntimeCatalogEntry =
       adapter: ReviewerAdapter;
       probe: AvailabilityProbeFn;
       quotaProbe?: QuotaProbeFn;
+      costProbe?: CostProbeFn;
     };
 
 export interface RoutingConfig {
   registry: ProviderRegistry;
   catalog: readonly RuntimeCatalogEntry[];
+  /** Mandatory for active routed config (A-026). No default ceiling. */
+  costConstraint: CostRoutingConstraint;
 }
 
-/** Router-native pre-dispatch block reasons (A-009 / A-020 / A-021; not FailureClass). */
+/** Router-native pre-dispatch block reasons (A-009 / A-020 / A-021 / A-028 / A-029; not FailureClass). */
 export type RoutingBlockReason =
   | "NO_ELIGIBLE_BINDING"
   | "NO_AVAILABLE_BINDING"
   | "NO_QUOTA_ROUTABLE_BINDING"
+  | "NO_COST_VERIFIABLE_BINDING"
   | "ROUTING_PROVENANCE_MISSING"
   | "ROUTING_CONFIG_INVALID"
   | "PINNED_BINDING_ABSENT"
@@ -69,6 +87,7 @@ export type RoutingBlockReason =
   | "PINNED_BINDING_NOT_IN_CATALOG"
   | "PINNED_BINDING_UNAVAILABLE"
   | "PINNED_BINDING_QUOTA_EXHAUSTED"
+  | "PINNED_BINDING_COST_NOT_VERIFIABLE"
   | "SELECTED_BINDING_NOT_IN_CATALOG";
 
 export interface DurableRoutingObservation {
@@ -81,6 +100,19 @@ export interface DurableQuotaRoutingObservation {
   state: QuotaState;
 }
 
+export interface DurableCostRoutingObservation {
+  binding_id: string;
+  state: CostObservation["state"];
+  estimate?: CostEstimate;
+}
+
+export interface DurableCostConstraintSnapshot {
+  max_estimate: {
+    amount_decimal: string;
+    currency_code: string;
+  };
+}
+
 export type RoutedBindingOutcome =
   | {
       status: "SELECTED";
@@ -88,16 +120,41 @@ export type RoutedBindingOutcome =
       entry: RuntimeCatalogEntry;
       observations: AvailabilityObservation[];
       quota_observations: QuotaObservation[];
+      cost_observations: CostObservation[];
       pinned_binding_id: string | null;
       quota_state?: "AVAILABLE" | "UNKNOWN";
+      cost_state: "ESTIMATE_AVAILABLE";
+      estimate: CostEstimate;
     }
   | {
       status: "BLOCKED";
       reason: RoutingBlockReason;
       observations: AvailabilityObservation[];
       quota_observations: QuotaObservation[];
+      cost_observations: CostObservation[];
       pinned_binding_id: string | null;
     };
+
+/**
+ * Fail-closed validation of mandatory costConstraint (A-026).
+ * Missing/malformed → ROUTING_CONFIG_INVALID. No default ceiling.
+ */
+export function requireCostRoutingConstraint(
+  constraint: unknown,
+): CostRoutingConstraint {
+  if (!isValidCostRoutingConstraint(constraint)) {
+    throw new ControlError(
+      "ROUTING_CONFIG_INVALID",
+      "routing costConstraint.max_estimate must be a canonical CostEstimate",
+    );
+  }
+  return {
+    max_estimate: {
+      amount_decimal: constraint.max_estimate.amount_decimal,
+      currency_code: constraint.max_estimate.currency_code,
+    },
+  };
+}
 
 /**
  * Fail-closed validation of the explicit runtime catalog against the registry.
@@ -174,6 +231,38 @@ export function sanitizeQuotaRoutingObservations(
   }));
 }
 
+/** Sanitized cost observations for routing-block evidence (no raw probe detail). */
+export function sanitizeCostRoutingObservations(
+  observations: readonly CostObservation[],
+): DurableCostRoutingObservation[] {
+  return observations.map((o) => {
+    if (o.state === "ESTIMATE_AVAILABLE") {
+      return {
+        binding_id: o.binding_id,
+        state: o.state,
+        estimate: {
+          amount_decimal: o.estimate.amount_decimal,
+          currency_code: o.estimate.currency_code,
+        },
+      };
+    }
+    return { binding_id: o.binding_id, state: o.state };
+  });
+}
+
+/** Evaluation-snapshot only; not spend authority. */
+export function sanitizeCostConstraintSnapshot(
+  constraint: CostRoutingConstraint,
+): DurableCostConstraintSnapshot {
+  const validated = requireCostRoutingConstraint(constraint);
+  return {
+    max_estimate: {
+      amount_decimal: validated.max_estimate.amount_decimal,
+      currency_code: validated.max_estimate.currency_code,
+    },
+  };
+}
+
 /**
  * Produce current availability observations for an S1 eligible set.
  * Catalog entry → observeBindingAvailability(probe); absent → UNKNOWN.
@@ -217,14 +306,40 @@ export async function observeQuotaForAvailableBindings(
 }
 
 /**
- * Initial selection: S1 → availability → S8 selectBindingWithQuota (A-020).
- * Pre-claim EXHAUSTED skip is routing selection, not failover.
+ * Cost observations for quota-routable candidates only (A-027/A-028).
+ * Quota AVAILABLE then UNKNOWN; EXHAUSTED never probed. Missing costProbe → UNKNOWN.
+ */
+export async function observeCostForQuotaRoutableBindings(
+  quotaObservations: readonly QuotaObservation[],
+  catalog: ReadonlyMap<string, RuntimeCatalogEntry>,
+): Promise<CostObservation[]> {
+  const observations: CostObservation[] = [];
+  for (const q of quotaObservations) {
+    if (q.state === "EXHAUSTED") {
+      continue;
+    }
+    const entry = catalog.get(q.binding_id);
+    if (!entry?.costProbe) {
+      observations.push({ binding_id: q.binding_id, state: "UNKNOWN" });
+      continue;
+    }
+    observations.push(await observeBindingCost(q.binding_id, entry.costProbe));
+  }
+  return observations;
+}
+
+/**
+ * Initial selection: S1 → availability → quota → cost → S10 selectBindingWithQuotaAndCost (A-028).
+ * Pre-claim EXHAUSTED / non-verifiable cost skip is routing selection, not failover.
  */
 export async function selectRoutedBinding(args: {
   registry: ProviderRegistry;
   catalog: ReadonlyMap<string, RuntimeCatalogEntry>;
   request: EligibilityRequest;
+  costConstraint: CostRoutingConstraint;
 }): Promise<RoutedBindingOutcome> {
+  const costConstraint = requireCostRoutingConstraint(args.costConstraint);
+
   const eligibility = filterEligibleBindings(args.registry, args.request);
   if (eligibility.status === "NO_ELIGIBLE_BINDING") {
     return {
@@ -232,6 +347,7 @@ export async function selectRoutedBinding(args: {
       reason: "NO_ELIGIBLE_BINDING",
       observations: [],
       quota_observations: [],
+      cost_observations: [],
       pinned_binding_id: null,
     };
   }
@@ -247,12 +363,18 @@ export async function selectRoutedBinding(args: {
     availableIds,
     args.catalog,
   );
+  const costObservations = await observeCostForQuotaRoutableBindings(
+    quotaObservations,
+    args.catalog,
+  );
 
-  const selected = selectBindingWithQuota(
+  const selected = selectBindingWithQuotaAndCost(
     args.registry,
     args.request,
     observations,
     quotaObservations,
+    costObservations,
+    costConstraint,
   );
 
   if (selected.status === "NO_ELIGIBLE_BINDING") {
@@ -261,6 +383,7 @@ export async function selectRoutedBinding(args: {
       reason: "NO_ELIGIBLE_BINDING",
       observations,
       quota_observations: quotaObservations,
+      cost_observations: costObservations,
       pinned_binding_id: null,
     };
   }
@@ -270,6 +393,7 @@ export async function selectRoutedBinding(args: {
       reason: "NO_AVAILABLE_BINDING",
       observations,
       quota_observations: quotaObservations,
+      cost_observations: costObservations,
       pinned_binding_id: null,
     };
   }
@@ -279,6 +403,17 @@ export async function selectRoutedBinding(args: {
       reason: "NO_QUOTA_ROUTABLE_BINDING",
       observations,
       quota_observations: quotaObservations,
+      cost_observations: costObservations,
+      pinned_binding_id: null,
+    };
+  }
+  if (selected.status === "NO_COST_VERIFIABLE_BINDING") {
+    return {
+      status: "BLOCKED",
+      reason: "NO_COST_VERIFIABLE_BINDING",
+      observations,
+      quota_observations: quotaObservations,
+      cost_observations: costObservations,
       pinned_binding_id: null,
     };
   }
@@ -290,6 +425,7 @@ export async function selectRoutedBinding(args: {
       reason: "SELECTED_BINDING_NOT_IN_CATALOG",
       observations,
       quota_observations: quotaObservations,
+      cost_observations: costObservations,
       pinned_binding_id: null,
     };
   }
@@ -299,6 +435,7 @@ export async function selectRoutedBinding(args: {
       reason: "ROUTING_CONFIG_INVALID",
       observations,
       quota_observations: quotaObservations,
+      cost_observations: costObservations,
       pinned_binding_id: null,
     };
   }
@@ -309,21 +446,26 @@ export async function selectRoutedBinding(args: {
     entry,
     observations,
     quota_observations: quotaObservations,
+    cost_observations: costObservations,
     pinned_binding_id: null,
     quota_state: selected.quota_state,
+    cost_state: "ESTIMATE_AVAILABLE",
+    estimate: selected.estimate,
   };
 }
 
 /**
- * Same-request pin: exact prior binding_id; quota only on pinned binding (A-021).
- * Never select another binding. EXHAUSTED → PINNED_BINDING_QUOTA_EXHAUSTED.
+ * Same-request pin: availability → quota → cost on pinned binding only (A-029).
+ * Never select another binding. Cost UNKNOWN/over/mismatch → PINNED_BINDING_COST_NOT_VERIFIABLE.
  */
 export async function resolvePinnedBinding(args: {
   registry: ProviderRegistry;
   catalog: ReadonlyMap<string, RuntimeCatalogEntry>;
   request: EligibilityRequest;
   pinnedBindingId: string;
+  costConstraint: CostRoutingConstraint;
 }): Promise<RoutedBindingOutcome> {
+  const costConstraint = requireCostRoutingConstraint(args.costConstraint);
   const pinned = args.pinnedBindingId;
   const reg = args.registry.bindings.find((b) => b.binding_id === pinned);
   if (!reg) {
@@ -332,6 +474,7 @@ export async function resolvePinnedBinding(args: {
       reason: "PINNED_BINDING_ABSENT",
       observations: [{ binding_id: pinned, state: "UNKNOWN" }],
       quota_observations: [],
+      cost_observations: [],
       pinned_binding_id: pinned,
     };
   }
@@ -353,6 +496,7 @@ export async function resolvePinnedBinding(args: {
       reason: "PINNED_BINDING_INELIGIBLE",
       observations,
       quota_observations: [],
+      cost_observations: [],
       pinned_binding_id: pinned,
     };
   }
@@ -364,6 +508,7 @@ export async function resolvePinnedBinding(args: {
       reason: "PINNED_BINDING_NOT_IN_CATALOG",
       observations: [{ binding_id: pinned, state: "UNKNOWN" }],
       quota_observations: [],
+      cost_observations: [],
       pinned_binding_id: pinned,
     };
   }
@@ -373,6 +518,7 @@ export async function resolvePinnedBinding(args: {
       reason: "ROUTING_CONFIG_INVALID",
       observations: [{ binding_id: pinned, state: "UNKNOWN" }],
       quota_observations: [],
+      cost_observations: [],
       pinned_binding_id: pinned,
     };
   }
@@ -384,6 +530,7 @@ export async function resolvePinnedBinding(args: {
       reason: "PINNED_BINDING_UNAVAILABLE",
       observations: [obs],
       quota_observations: [],
+      cost_observations: [],
       pinned_binding_id: pinned,
     };
   }
@@ -398,6 +545,39 @@ export async function resolvePinnedBinding(args: {
       reason: "PINNED_BINDING_QUOTA_EXHAUSTED",
       observations: [obs],
       quota_observations: [quotaObs],
+      cost_observations: [],
+      pinned_binding_id: pinned,
+    };
+  }
+
+  const costObs = entry.costProbe
+    ? await observeBindingCost(pinned, entry.costProbe)
+    : ({ binding_id: pinned, state: "UNKNOWN" } satisfies CostObservation);
+
+  const costAssessed = applyCostRoutingConstraint(
+    [reg],
+    [costObs],
+    costConstraint,
+  );
+  if (costAssessed.within_ceiling.length === 0) {
+    return {
+      status: "BLOCKED",
+      reason: "PINNED_BINDING_COST_NOT_VERIFIABLE",
+      observations: [obs],
+      quota_observations: [quotaObs],
+      cost_observations: [costObs],
+      pinned_binding_id: pinned,
+    };
+  }
+
+  if (costObs.state !== "ESTIMATE_AVAILABLE") {
+    // Defensive: WITHIN_CEILING requires ESTIMATE_AVAILABLE.
+    return {
+      status: "BLOCKED",
+      reason: "PINNED_BINDING_COST_NOT_VERIFIABLE",
+      observations: [obs],
+      quota_observations: [quotaObs],
+      cost_observations: [costObs],
       pinned_binding_id: pinned,
     };
   }
@@ -408,8 +588,14 @@ export async function resolvePinnedBinding(args: {
     entry,
     observations: [obs],
     quota_observations: [quotaObs],
+    cost_observations: [costObs],
     pinned_binding_id: pinned,
     quota_state: quotaObs.state === "AVAILABLE" ? "AVAILABLE" : "UNKNOWN",
+    cost_state: "ESTIMATE_AVAILABLE",
+    estimate: {
+      amount_decimal: costObs.estimate.amount_decimal,
+      currency_code: costObs.estimate.currency_code,
+    },
   };
 }
 
