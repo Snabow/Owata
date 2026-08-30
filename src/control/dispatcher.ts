@@ -25,6 +25,7 @@ import {
   type PcDecisionKind,
   type ReviewerResultBody,
 } from "./protocol.js";
+import { assertPcDecisionAuthority } from "../program-control/authority.js";
 
 export interface DispatcherAdapters {
   programControl: ProgramControlAdapter;
@@ -213,7 +214,11 @@ export class Dispatcher {
       ],
       required_capabilities: [...DEFAULT_PC_CAPS],
       expected_result_kind: "program_control_decision",
-      stop_condition: "bounded fake PC; no real provider",
+      stop_condition:
+        this.adapters.programControl.identity.adapter_id ===
+        "gateway-program-control"
+          ? "real Program Control; durable envelopes; no Browser Relay"
+          : "bounded fake PC; no real provider",
       authorized_by_decision_id: null,
       authorized_finding_ids: [],
       retry_of_request_id: null,
@@ -344,6 +349,14 @@ export class Dispatcher {
         raw = await this.adapters.programControl.decide({
           cycle: this.handoff.snapshot(cycle),
           envelopes: this.handoff.listEnvelopes(cycle.cycle_id),
+          request,
+          dispatch: {
+            dispatch_id: dispatch.dispatch_id,
+            attempt_number: dispatch.attempt_number,
+            fence_token: dispatch.fence_token,
+            lease_expires_at: dispatch.lease_expires_at,
+          },
+          signal: abort.signal,
         });
       } else if (role === "builder") {
         raw = await this.adapters.builder.build({
@@ -553,6 +566,12 @@ export class Dispatcher {
             dispatch_id: dispatch.dispatch_id,
           },
         });
+        // Deterministic authority gates before applying ACCEPT / REWORK.
+        assertPcDecisionAuthority({
+          decision: body,
+          cycle: this.handoff.snapshot(live),
+          envelopes: this.handoff.listEnvelopes(live.cycle_id),
+        });
         return this.applyDecision(live, parsed as CanonicalEnvelope<PcDecisionBody>);
       });
       return { cycle: next, action: "pc_decision", detail: { decision: body.decision } };
@@ -576,7 +595,9 @@ export class Dispatcher {
       }
       if (
         err instanceof ControlError &&
-        (err.code === "POLICY_PROVENANCE" || err.code === "PROTOCOL")
+        (err.code === "POLICY_PROVENANCE" ||
+          err.code === "PROTOCOL" ||
+          err.code === "RESULT_INVALID")
       ) {
         try {
           this.handoff.rejectResult({

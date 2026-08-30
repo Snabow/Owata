@@ -14,6 +14,7 @@
     "test": "npm run build && node --test \"dist/**/*.test.js\"",
     "canary": "npm run build && node dist/canary/b1-session-replacement-canary.js",
     "canary:b2-reviewer": "npm run build && node dist/canary/b2-reviewer-canary.js",
+    "canary:b2-full": "npm run build && node dist/canary/b2-full-no-relay-canary.js",
     "owata": "node dist/cli.js"
   },
   "engines": {

@@ -38,9 +38,26 @@ export interface CycleSnapshot {
   recovery_reason: string | null;
 }
 
+/**
+ * Lease/ownership context for a real (long-running) Program Control invocation.
+ * Fake adapters may ignore it entirely.
+ */
+export interface ProgramControlDispatchContext {
+  dispatch_id: string;
+  attempt_number: number;
+  fence_token: string;
+  lease_expires_at: string;
+}
+
 export interface ProgramControlInput {
   cycle: CycleSnapshot;
   envelopes: CanonicalEnvelope[];
+  /** Present when the Dispatcher owns a live dispatch lease for this invocation. */
+  request?: CanonicalEnvelope<ControlRequestBody>;
+  /** Present when the Dispatcher owns a live dispatch lease for this invocation. */
+  dispatch?: ProgramControlDispatchContext;
+  /** Aborted when the Dispatcher loses the lease (heartbeat renew failure). */
+  signal?: AbortSignal;
 }
 
 /**

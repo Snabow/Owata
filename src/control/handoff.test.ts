@@ -404,7 +404,15 @@ test("duplicate envelope and replay do not re-invoke after acceptance", async ()
       policy: { on_builder_candidate: "AWAIT_PC" },
     });
     const pc = new FakeProgramControlAdapter(
-      [pcBuildAwait, pcDecision({ decision: "ACCEPT", rationale: "done" })],
+      [
+        pcBuildAwait,
+        pcDecision({
+          decision: "HUMAN_GATE",
+          rationale: "pause after builder; no ACCEPT without PASS",
+          human_gate_purpose: "Continue?",
+          human_gate_choices: ["ACCEPT", "ABORT"],
+        }),
+      ],
       envClock,
     );
     const builder = new FakeBuilderAdapter(
