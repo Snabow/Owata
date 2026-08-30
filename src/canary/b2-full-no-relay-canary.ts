@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ControlStore, Dispatcher, HandoffStore, PROTOCOL_V1 } from "../control/index.js";
+import type { RuntimeCatalogEntry } from "../control/routing.js";
 import type { PcDecisionBody, ReviewerResultBody } from "../control/protocol.js";
 import {
   CodexCliProgramControlBinding,
@@ -28,6 +29,10 @@ import {
   CodexCliBinding,
   GatewayReviewerAdapter,
 } from "../reviewer/index.js";
+import {
+  defaultProviderRegistryPath,
+  loadProviderRegistry,
+} from "../router/index.js";
 import { persistB2FullEvidence } from "./b2-full-evidence-export.js";
 import {
   B2_S2_CANARY_EXTERNAL_RESULT_REJECTED,
@@ -353,6 +358,30 @@ async function main(): Promise<number> {
       return reviewerReview(input);
     };
 
+    const providerRegistry = loadProviderRegistry(
+      defaultProviderRegistryPath(repoRoot),
+    );
+    const routingCatalog: RuntimeCatalogEntry[] = [
+      {
+        binding_id: pcBinding.bindingId,
+        role: "program_control",
+        adapter: pcGateway,
+        probe: () => pcGateway.refreshProbe(),
+      },
+      {
+        binding_id: builderBinding.bindingId,
+        role: "builder",
+        adapter: builderGateway,
+        probe: () => builderGateway.refreshProbe(),
+      },
+      {
+        binding_id: reviewerBinding.bindingId,
+        role: "reviewer",
+        adapter: reviewerGateway,
+        probe: () => reviewerGateway.refreshProbe(),
+      },
+    ];
+
     const dispatcher = new Dispatcher(
       handoff,
       {
@@ -364,6 +393,10 @@ async function main(): Promise<number> {
         owner: "b2-full-no-relay-canary",
         leaseMs: 600_000,
         heartbeatMs: 30_000,
+        routing: {
+          registry: providerRegistry,
+          catalog: routingCatalog,
+        },
         gitReality: async (ctx) => {
           const artifacts = ensureExecutionDir(
             stateDir,

@@ -559,7 +559,8 @@ export class HandoffStore {
       if (
         e.event_type !== "cycle.recovery_required" &&
         e.event_type !== "cycle.capability_blocked" &&
-        e.event_type !== "cycle.result_rejected"
+        e.event_type !== "cycle.result_rejected" &&
+        e.event_type !== "cycle.routing_blocked"
       ) {
         return false;
       }
@@ -584,7 +585,10 @@ export class HandoffStore {
     cycleId: string;
     requestId: string | null;
     reason: string;
-    evidenceEventType?: "cycle.capability_blocked" | "cycle.result_rejected";
+    evidenceEventType?:
+      | "cycle.capability_blocked"
+      | "cycle.result_rejected"
+      | "cycle.routing_blocked";
     evidencePayload?: Record<string, unknown>;
   }): CycleRecord {
     const ts = nowIso(() => this.store.now());
@@ -721,7 +725,8 @@ export class HandoffStore {
       if (
         e.event_type !== "cycle.recovery_required" &&
         e.event_type !== "cycle.capability_blocked" &&
-        e.event_type !== "cycle.result_rejected"
+        e.event_type !== "cycle.result_rejected" &&
+        e.event_type !== "cycle.routing_blocked"
       ) {
         return false;
       }

@@ -26,6 +26,17 @@ import {
   type ReviewerResultBody,
 } from "./protocol.js";
 import { assertPcDecisionAuthority } from "../program-control/authority.js";
+import {
+  catalogByBindingId,
+  eligibilityRequestFor,
+  resolvePinnedBinding,
+  sanitizeRoutingObservations,
+  selectRoutedBinding,
+  validateRuntimeCatalog,
+  type RoutingConfig,
+  type RuntimeCatalogEntry,
+} from "./routing.js";
+import type { RoutableRole } from "../router/index.js";
 
 export interface DispatcherAdapters {
   programControl: ProgramControlAdapter;
@@ -54,6 +65,11 @@ export interface DispatcherOptions {
   heartbeatMs?: number;
   /** Injectable Git reality verifier for Builder CANDIDATE_READY results. */
   gitReality?: (ctx: GitRealityContext) => void | Promise<void>;
+  /**
+   * Optional active Router cutover. When present, invokeRole uses S1→observe→S3
+   * (or same-request pin) and never falls back to the fixed adapter triple.
+   */
+  routing?: RoutingConfig;
 }
 
 export interface StepResult {
@@ -80,12 +96,40 @@ const DEFAULT_PC_CAPS = ["repository_read"] as const;
 type DispatchRole = "program_control" | "builder" | "reviewer";
 
 export class Dispatcher {
+  private readonly catalogIndex: Map<string, RuntimeCatalogEntry> | null;
+  private catalogValidated = false;
+
   constructor(
     readonly handoff: HandoffStore,
     readonly adapters: DispatcherAdapters,
     readonly options: DispatcherOptions,
-  ) {}
+  ) {
+    if (options.routing) {
+      validateRuntimeCatalog(options.routing.registry, options.routing.catalog);
+      this.catalogValidated = true;
+      this.catalogIndex = catalogByBindingId(options.routing.catalog);
+    } else {
+      this.catalogIndex = null;
+    }
+  }
 
+  private ensureRoutingReady(): {
+    registry: RoutingConfig["registry"];
+    catalog: Map<string, RuntimeCatalogEntry>;
+  } {
+    const routing = this.options.routing;
+    if (!routing || !this.catalogIndex) {
+      throw new ControlError(
+        "ROUTING_CONFIG_INVALID",
+        "routing required but not configured",
+      );
+    }
+    if (!this.catalogValidated) {
+      validateRuntimeCatalog(routing.registry, routing.catalog);
+      this.catalogValidated = true;
+    }
+    return { registry: routing.registry, catalog: this.catalogIndex };
+  }
   recover(now?: Date): number {
     return this.handoff.recoverExpiredDispatches(now ?? this.handoff.store.now());
   }
@@ -260,6 +304,166 @@ export class Dispatcher {
     return this.adapters.reviewer;
   }
 
+  private builderAdapterIdFor(dispatch: DispatchRecord): string {
+    if (this.catalogIndex && dispatch.binding_id) {
+      const entry = this.catalogIndex.get(dispatch.binding_id);
+      if (entry && entry.role === "builder") {
+        return entry.adapter.identity.adapter_id;
+      }
+    }
+    return this.adapters.builder.identity.adapter_id;
+  }
+
+  private enterRoutingBlock(args: {
+    cycle: CycleRecord;
+    request: CanonicalEnvelope<ControlRequestBody>;
+    role: DispatchRole;
+    reason: string;
+    pinnedBindingId: string | null;
+    observations: Parameters<typeof sanitizeRoutingObservations>[0];
+  }): StepResult {
+    const recoveryTarget =
+      args.role === "builder" || args.role === "reviewer"
+        ? args.request.request_id!
+        : null;
+    this.handoff.enterRecovery({
+      cycleId: args.cycle.cycle_id,
+      requestId: recoveryTarget,
+      reason: args.reason,
+      evidenceEventType: "cycle.routing_blocked",
+      evidencePayload: {
+        target_role: args.role,
+        router_status: args.reason,
+        required_capabilities: [...args.request.body.required_capabilities],
+        pinned_binding_id: args.pinnedBindingId,
+        observations: sanitizeRoutingObservations(args.observations),
+      },
+    });
+    return {
+      cycle: this.handoff.requireCycle(args.cycle.cycle_id),
+      action: "routing_blocked",
+      detail: {
+        reason: args.reason,
+        pinned_binding_id: args.pinnedBindingId,
+      },
+    };
+  }
+
+  private async resolveRoutedAdapter(
+    cycle: CycleRecord,
+    request: CanonicalEnvelope<ControlRequestBody>,
+    role: DispatchRole,
+    existing: DispatchRecord | undefined,
+    leaseValid: boolean,
+  ): Promise<
+    | { ok: true; entry: RuntimeCatalogEntry; bindingId: string }
+    | { ok: false; step: StepResult }
+  > {
+    const { registry, catalog } = this.ensureRoutingReady();
+    const eligibility = eligibilityRequestFor(
+      role as RoutableRole,
+      request.body.required_capabilities,
+    );
+
+    // Live same-owner CLAIMED lease: reuse attributed binding; do not reselect.
+    if (leaseValid && existing) {
+      if (existing.binding_id == null) {
+        return {
+          ok: false,
+          step: this.enterRoutingBlock({
+            cycle,
+            request,
+            role,
+            reason: "ROUTING_PROVENANCE_MISSING",
+            pinnedBindingId: null,
+            observations: [],
+          }),
+        };
+      }
+      const entry = catalog.get(existing.binding_id);
+      if (!entry || entry.role !== role) {
+        return {
+          ok: false,
+          step: this.enterRoutingBlock({
+            cycle,
+            request,
+            role,
+            reason: "ROUTING_CONFIG_INVALID",
+            pinnedBindingId: existing.binding_id,
+            observations: [
+              { binding_id: existing.binding_id, state: "UNKNOWN" },
+            ],
+          }),
+        };
+      }
+      return { ok: true, entry, bindingId: existing.binding_id };
+    }
+
+    if (existing) {
+      if (existing.binding_id == null) {
+        return {
+          ok: false,
+          step: this.enterRoutingBlock({
+            cycle,
+            request,
+            role,
+            reason: "ROUTING_PROVENANCE_MISSING",
+            pinnedBindingId: null,
+            observations: [],
+          }),
+        };
+      }
+      const pinned = await resolvePinnedBinding({
+        registry,
+        catalog,
+        request: eligibility,
+        pinnedBindingId: existing.binding_id,
+      });
+      if (pinned.status === "BLOCKED") {
+        return {
+          ok: false,
+          step: this.enterRoutingBlock({
+            cycle,
+            request,
+            role,
+            reason: pinned.reason,
+            pinnedBindingId: pinned.pinned_binding_id,
+            observations: pinned.observations,
+          }),
+        };
+      }
+      return {
+        ok: true,
+        entry: pinned.entry,
+        bindingId: pinned.binding_id,
+      };
+    }
+
+    const selected = await selectRoutedBinding({
+      registry,
+      catalog,
+      request: eligibility,
+    });
+    if (selected.status === "BLOCKED") {
+      return {
+        ok: false,
+        step: this.enterRoutingBlock({
+          cycle,
+          request,
+          role,
+          reason: selected.reason,
+          pinnedBindingId: selected.pinned_binding_id,
+          observations: selected.observations,
+        }),
+      };
+    }
+    return {
+      ok: true,
+      entry: selected.entry,
+      bindingId: selected.binding_id,
+    };
+  }
+
   private async invokeRole(
     cycle: CycleRecord,
     role: DispatchRole,
@@ -272,12 +476,44 @@ export class Dispatcher {
       );
     }
 
-    const accepted = this.handoff.acceptedDispatch(cycle.cycle_id, request.request_id!);
+    const accepted = this.handoff.acceptedDispatch(
+      cycle.cycle_id,
+      request.request_id!,
+    );
     if (accepted) {
       return { cycle, action: "already_accepted" };
     }
 
-    const adapter = this.adapterFor(role);
+    const existing = this.handoff.latestDispatch(
+      cycle.cycle_id,
+      request.request_id!,
+    );
+    const leaseValid =
+      existing != null &&
+      existing.state === "CLAIMED" &&
+      existing.owner === this.options.owner &&
+      this.handoff.store.now().getTime() < Date.parse(existing.lease_expires_at);
+
+    let adapter: RoleAdapter;
+    let bindingId: string | null = null;
+
+    if (this.options.routing) {
+      const resolved = await this.resolveRoutedAdapter(
+        cycle,
+        request,
+        role,
+        existing,
+        leaseValid,
+      );
+      if (!resolved.ok) {
+        return resolved.step;
+      }
+      adapter = resolved.entry.adapter;
+      bindingId = resolved.bindingId;
+    } else {
+      adapter = this.adapterFor(role);
+    }
+
     if (adapter.identity.role !== role) {
       const recoveryTarget =
         role === "builder" || role === "reviewer" ? request.request_id! : null;
@@ -301,6 +537,7 @@ export class Dispatcher {
     const required = request.body.required_capabilities;
     const pre = adapter.preflight(required);
     if (!pre.ok) {
+      // Preflight contradiction after SELECTED: fail closed; do not reselect.
       this.handoff.recordCapabilityBlock({
         cycleId: cycle.cycle_id,
         requestId: request.request_id!,
@@ -315,12 +552,6 @@ export class Dispatcher {
 
     let dispatch: DispatchRecord;
     try {
-      const existing = this.handoff.latestDispatch(cycle.cycle_id, request.request_id!);
-      const leaseValid =
-        existing != null &&
-        existing.state === "CLAIMED" &&
-        existing.owner === this.options.owner &&
-        this.handoff.store.now().getTime() < Date.parse(existing.lease_expires_at);
       dispatch =
         leaseValid && existing
           ? existing
@@ -330,6 +561,9 @@ export class Dispatcher {
               targetRole: role,
               owner: this.options.owner,
               leaseMs: this.options.leaseMs,
+              ...(this.options.routing
+                ? { bindingId: bindingId! }
+                : {}),
             });
     } catch (err) {
       if (err instanceof ControlError && err.code === "RETRY_BUDGET") {
@@ -346,7 +580,8 @@ export class Dispatcher {
     let raw: unknown;
     try {
       if (role === "program_control") {
-        raw = await this.adapters.programControl.decide({
+        const pc = adapter as ProgramControlAdapter;
+        raw = await pc.decide({
           cycle: this.handoff.snapshot(cycle),
           envelopes: this.handoff.listEnvelopes(cycle.cycle_id),
           request,
@@ -359,7 +594,8 @@ export class Dispatcher {
           signal: abort.signal,
         });
       } else if (role === "builder") {
-        raw = await this.adapters.builder.build({
+        const builder = adapter as BuilderAdapter;
+        raw = await builder.build({
           cycle: this.handoff.snapshot(cycle),
           request,
           envelopes: this.handoff.listEnvelopes(cycle.cycle_id),
@@ -372,7 +608,8 @@ export class Dispatcher {
           signal: abort.signal,
         });
       } else {
-        raw = await this.adapters.reviewer.review({
+        const reviewer = adapter as ReviewerAdapter;
+        raw = await reviewer.review({
           cycle: this.handoff.snapshot(cycle),
           request,
           dispatch: {
@@ -418,7 +655,6 @@ export class Dispatcher {
 
     return this.acceptRoleOutput(cycle, request, dispatch, raw, role);
   }
-
   /**
    * Renew the same claimed fence while a long adapter invocation runs.
    * Heartbeat failure aborts the adapter via AbortSignal; it does not
@@ -660,7 +896,7 @@ export class Dispatcher {
   ): Promise<StepResult> {
     const body = parsed.body as BuilderResultBody;
     if (body.status === "CANDIDATE_READY" && body.candidate_sha) {
-      const adapterId = this.adapters.builder.identity.adapter_id;
+      const adapterId = this.builderAdapterIdFor(dispatch);
       if (adapterId !== "fake-builder") {
         if (!this.options.gitReality) {
           const reason =

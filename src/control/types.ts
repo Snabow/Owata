@@ -43,6 +43,7 @@ export type EventType =
   | "cycle.request_persisted"
   | "cycle.dispatch_claimed"
   | "cycle.capability_blocked"
+  | "cycle.routing_blocked"
   | "cycle.result_accepted"
   | "cycle.result_rejected"
   | "cycle.decision_persisted"

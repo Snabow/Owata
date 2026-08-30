@@ -40,3 +40,19 @@ export type {
   BuilderAdapter,
   ReviewerAdapter,
 } from "./adapters.js";
+export {
+  validateRuntimeCatalog,
+  selectRoutedBinding,
+  resolvePinnedBinding,
+  sanitizeRoutingObservations,
+  catalogByBindingId,
+  eligibilityRequestFor,
+} from "./routing.js";
+export type {
+  AvailabilityProbeFn,
+  RuntimeCatalogEntry,
+  RoutingConfig,
+  RoutingBlockReason,
+  RoutedBindingOutcome,
+  DurableRoutingObservation,
+} from "./routing.js";
