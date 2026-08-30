@@ -87,6 +87,29 @@ export type BindingSelectionResult =
       status: "NO_AVAILABLE_BINDING";
     };
 
+/** Provider-neutral quota probe: exhausted flag only (no remaining_tokens / prices / plans). */
+export interface QuotaProbeResult {
+  exhausted: boolean;
+  detail?: string;
+}
+
+export type QuotaState = "AVAILABLE" | "EXHAUSTED" | "UNKNOWN";
+
+export interface QuotaObservation {
+  binding_id: string;
+  state: QuotaState;
+  detail?: string;
+}
+
+/** Deterministic partition of input bindings by quota observation (input order preserved). */
+export interface QuotaAssessmentResult {
+  available: ProviderBinding[];
+  exhausted: ProviderBinding[];
+  unknown: ProviderBinding[];
+  /** Per input-binding observation used for this assessment (ephemeral). */
+  observations: QuotaObservation[];
+}
+
 export class RouterError extends Error {
   readonly code: string;
 

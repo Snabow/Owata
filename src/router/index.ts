@@ -14,6 +14,10 @@ export {
   type EligibilityStatus,
   type ProviderBinding,
   type ProviderRegistry,
+  type QuotaAssessmentResult,
+  type QuotaObservation,
+  type QuotaProbeResult,
+  type QuotaState,
   type RoutableRole,
 } from "./types.js";
 export {
@@ -29,3 +33,8 @@ export {
   overlayAvailability,
 } from "./availability.js";
 export { selectBinding } from "./selection.js";
+export {
+  assessQuota,
+  normalizeQuota,
+  observeBindingQuota,
+} from "./quota.js";
