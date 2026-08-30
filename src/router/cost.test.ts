@@ -145,10 +145,12 @@ test("explicit zero preserved; never inferred from missing probe", () => {
     estimate: { amount_decimal: "0", currency_code: "USD" },
   });
   assert.equal(explicit.state, "ESTIMATE_AVAILABLE");
-  assert.equal(explicit.estimate?.amount_decimal, "0");
+  if (explicit.state === "ESTIMATE_AVAILABLE") {
+    assert.equal(explicit.estimate.amount_decimal, "0");
+  }
   const missing = normalizeCostEstimate("b1", null);
   assert.equal(missing.state, "UNKNOWN");
-  assert.equal(missing.estimate, undefined);
+  assert.equal("estimate" in missing, false);
 });
 
 test("duplicate binding observation -> COST_INVALID", () => {
@@ -224,6 +226,94 @@ test("unrelated observation cannot inject binding", () => {
   assert.deepEqual(
     result.unknown.map((x) => x.binding_id),
     ["b1"],
+  );
+});
+
+test("ESTIMATE_AVAILABLE without estimate -> COST_INVALID", () => {
+  const b = binding({ binding_id: "b1" });
+  const bad = {
+    binding_id: "b1",
+    state: "ESTIMATE_AVAILABLE",
+  } as unknown as CostObservation;
+  assert.throws(
+    () => assessCost([b], [bad]),
+    (err: unknown) =>
+      err instanceof RouterError && err.code === "COST_INVALID",
+  );
+});
+
+test("ESTIMATE_AVAILABLE malformed negative amount -> COST_INVALID", () => {
+  const b = binding({ binding_id: "b1" });
+  const bad = {
+    binding_id: "b1",
+    state: "ESTIMATE_AVAILABLE",
+    estimate: { amount_decimal: "-1", currency_code: "USD" },
+  } as unknown as CostObservation;
+  assert.throws(
+    () => assessCost([b], [bad]),
+    (err: unknown) =>
+      err instanceof RouterError && err.code === "COST_INVALID",
+  );
+});
+
+test("ESTIMATE_AVAILABLE exponent amount -> COST_INVALID", () => {
+  const b = binding({ binding_id: "b1" });
+  const bad = {
+    binding_id: "b1",
+    state: "ESTIMATE_AVAILABLE",
+    estimate: { amount_decimal: "1e3", currency_code: "USD" },
+  } as unknown as CostObservation;
+  assert.throws(
+    () => assessCost([b], [bad]),
+    (err: unknown) =>
+      err instanceof RouterError && err.code === "COST_INVALID",
+  );
+});
+
+test("ESTIMATE_AVAILABLE lowercase currency -> COST_INVALID", () => {
+  const b = binding({ binding_id: "b1" });
+  const bad = {
+    binding_id: "b1",
+    state: "ESTIMATE_AVAILABLE",
+    estimate: { amount_decimal: "1", currency_code: "usd" },
+  } as unknown as CostObservation;
+  assert.throws(
+    () => assessCost([b], [bad]),
+    (err: unknown) =>
+      err instanceof RouterError && err.code === "COST_INVALID",
+  );
+});
+
+test("valid ESTIMATE_AVAILABLE still enters estimated; UNKNOWN stays unknown", () => {
+  const a = binding({ binding_id: "a" });
+  const b = binding({ binding_id: "b" });
+  const result = assessCost(
+    [a, b],
+    [
+      {
+        binding_id: "a",
+        state: "ESTIMATE_AVAILABLE",
+        estimate: { amount_decimal: "1", currency_code: "USD" },
+      },
+      { binding_id: "b", state: "UNKNOWN" },
+    ],
+  );
+  assert.deepEqual(
+    result.estimated.map((x) => x.binding_id),
+    ["a"],
+  );
+  assert.deepEqual(
+    result.unknown.map((x) => x.binding_id),
+    ["b"],
+  );
+});
+
+test("malformed raw probe through normalizeCostEstimate still -> UNKNOWN", () => {
+  assert.equal(
+    normalizeCostEstimate("b1", {
+      estimate: { amount_decimal: "-1", currency_code: "USD" },
+    }).state,
+    "UNKNOWN",
   );
 });
 

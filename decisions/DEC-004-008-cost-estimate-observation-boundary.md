@@ -4,7 +4,7 @@
 **Status:** ACCEPTED
 **Date:** 2026-08-30
 **Work Package:** WP-004-S7
-**Authority:** Program Control (OWATA-REQ-0102)
+**Authority:** Program Control (OWATA-REQ-0102; invariant repair OWATA-REQ-0103)
 **Related:** `decisions/DEC-004-002-availability-boundary.md`, `decisions/DEC-004-007-quota-observation-boundary.md`, `decisions/DEC-004-006-human-routine-approval-zero.md`
 
 Builder MUST NOT expand or change this Decision beyond recording the Program Control adjudications below.
@@ -55,6 +55,14 @@ Rules:
 - Within one assessment, observation identity is **unique by `binding_id`**. Duplicate `binding_id` observations fail closed with `RouterError` code `COST_INVALID`. No first-wins / last-wins / merge
 - Observations whose `binding_id` is **absent from the input binding list are ignored** — they cannot inject a binding into any partition
 - Partitions are **descriptive only** — no cheapest selection, no currency conversion, no amount sorting, no LOW/MEDIUM/HIGH, no thresholds, no spend authorization
+
+Normalized `CostObservation` invariant (distinct from raw probe normalization):
+
+- `ESTIMATE_AVAILABLE` → syntactically valid `estimate` required
+- Contradictory/malformed normalized observations fail closed with `COST_INVALID`
+- Raw malformed probe payload: `normalizeCostEstimate` → `UNKNOWN`
+
+These are intentionally distinct boundaries.
 
 S7 does **not** map cost partitions to Control Core `FailureClass`, and does **not** change `selectBinding` / Dispatcher selection.
 

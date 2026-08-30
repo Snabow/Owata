@@ -10,7 +10,8 @@ import type {
 const AMOUNT_DECIMAL = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
 const CURRENCY_CODE = /^[A-Z]{3}$/;
 
-function isValidEstimate(value: unknown): value is CostEstimate {
+/** Single validation authority for CostEstimate syntactic rules. */
+export function isValidCostEstimate(value: unknown): value is CostEstimate {
   if (value == null || typeof value !== "object") {
     return false;
   }
@@ -21,6 +22,19 @@ function isValidEstimate(value: unknown): value is CostEstimate {
     return false;
   }
   return AMOUNT_DECIMAL.test(amount) && CURRENCY_CODE.test(currency);
+}
+
+function assertNormalizedObservation(obs: CostObservation): void {
+  if (obs.state === "UNKNOWN") {
+    return;
+  }
+  // ESTIMATE_AVAILABLE branch of the discriminated union
+  if (!isValidCostEstimate(obs.estimate)) {
+    throw new RouterError(
+      "COST_INVALID",
+      `ESTIMATE_AVAILABLE requires syntactically valid estimate for binding_id ${obs.binding_id}`,
+    );
+  }
 }
 
 /**
@@ -35,7 +49,7 @@ export function normalizeCostEstimate(
   if (probeResult == null) {
     return { binding_id: bindingId, state: "UNKNOWN" };
   }
-  if (!isValidEstimate(probeResult.estimate)) {
+  if (!isValidCostEstimate(probeResult.estimate)) {
     const out: CostObservation = {
       binding_id: bindingId,
       state: "UNKNOWN",
@@ -85,6 +99,7 @@ function indexObservations(
 ): Map<string, CostObservation> {
   const byId = new Map<string, CostObservation>();
   for (const obs of observations) {
+    assertNormalizedObservation(obs);
     if (byId.has(obs.binding_id)) {
       throw new RouterError(
         "COST_INVALID",
@@ -107,7 +122,7 @@ function observationFor(
  * Partition bindings by cost observation.
  * Preserves input binding order in each partition.
  * Missing observation is UNKNOWN.
- * Duplicate binding_id observations fail closed (COST_INVALID).
+ * Duplicate / contradictory normalized observations fail closed (COST_INVALID).
  * Observations for binding_ids absent from `bindings` are ignored (cannot inject).
  * Partitions are descriptive only — no ranking, conversion, or routing.
  */

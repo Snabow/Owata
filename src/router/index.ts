@@ -45,6 +45,7 @@ export {
 } from "./quota.js";
 export {
   assessCost,
+  isValidCostEstimate,
   normalizeCostEstimate,
   observeBindingCost,
 } from "./cost.js";

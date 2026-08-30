@@ -128,12 +128,18 @@ export interface CostProbeResult {
 
 export type CostState = "ESTIMATE_AVAILABLE" | "UNKNOWN";
 
-export interface CostObservation {
-  binding_id: string;
-  state: CostState;
-  estimate?: CostEstimate;
-  detail?: string;
-}
+export type CostObservation =
+  | {
+      binding_id: string;
+      state: "ESTIMATE_AVAILABLE";
+      estimate: CostEstimate;
+      detail?: string;
+    }
+  | {
+      binding_id: string;
+      state: "UNKNOWN";
+      detail?: string;
+    };
 
 /** Deterministic partition of input bindings by cost observation (input order preserved). */
 export interface CostAssessmentResult {
