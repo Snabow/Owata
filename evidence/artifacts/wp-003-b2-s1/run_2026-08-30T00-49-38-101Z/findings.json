@@ -1,0 +1,7 @@
+[
+  {
+    "finding_id": "RVW-001",
+    "severity": "high",
+    "summary": "Acceptance criterion is unmet: ACCEPTANCE.md:4 requires STATUS=READY, but STATUS.md:1 contains STATUS=BROKEN."
+  }
+]
