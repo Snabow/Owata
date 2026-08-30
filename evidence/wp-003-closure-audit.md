@@ -158,3 +158,5 @@ No additional unnamed Phase 3 product surface is acceptance-critical beyond **C0
 Notes: C10/C11/C21/C22/C23 = deferred non-goals. C16 durable reconstruction of cycle/project records = SATISFIED; CLI surface remains C08. C24 = stale docs. C25 = Browser Relay deletion wording (resolved by OWATA-REQ-0060 disposition).
 
 Exact remaining blocker IDs: `C08_DURABLE_STATUS_VIEW`
+
+Implementation candidate (not yet accepted): OWATA-REQ-0062 on branch `wp-003/status` — see `evidence/wp-003-status.md`. Audit classification of C08 remains TRUE_REMAINING_GAP until Independent Review + Program Control acceptance.
