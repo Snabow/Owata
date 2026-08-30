@@ -65,9 +65,24 @@ export interface BuilderInput {
   signal?: AbortSignal;
 }
 
+/**
+ * Lease/ownership context for a real (long-running) Reviewer invocation.
+ * Fake adapters may ignore it entirely.
+ */
+export interface ReviewerDispatchContext {
+  dispatch_id: string;
+  attempt_number: number;
+  fence_token: string;
+  lease_expires_at: string;
+}
+
 export interface ReviewerInput {
   cycle: CycleSnapshot;
   request: CanonicalEnvelope<ControlRequestBody>;
+  /** Present when the Dispatcher owns a live dispatch lease for this invocation. */
+  dispatch?: ReviewerDispatchContext;
+  /** Aborted when the Dispatcher loses the lease (heartbeat renew failure). */
+  signal?: AbortSignal;
 }
 
 /**

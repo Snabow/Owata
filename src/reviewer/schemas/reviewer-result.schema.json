@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OWATA reviewer_result envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "envelope_id",
+    "kind",
+    "cycle_id",
+    "request_id",
+    "from_role",
+    "to_role",
+    "created_at",
+    "body"
+  ],
+  "properties": {
+    "protocol": { "type": "string", "enum": ["owata.handoff/1"] },
+    "envelope_id": { "type": "string", "minLength": 1 },
+    "kind": { "type": "string", "enum": ["reviewer_result"] },
+    "cycle_id": { "type": "string", "minLength": 1 },
+    "request_id": { "type": ["string", "null"] },
+    "from_role": { "type": "string", "enum": ["reviewer"] },
+    "to_role": { "type": "string", "enum": ["program_control"] },
+    "created_at": { "type": "string", "minLength": 1 },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_sha", "verdict", "findings", "evidence_refs"],
+      "properties": {
+        "target_sha": { "type": "string", "minLength": 1 },
+        "verdict": { "type": "string", "enum": ["PASS", "REWORK", "BLOCK"] },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["finding_id", "severity", "summary"],
+            "properties": {
+              "finding_id": { "type": "string" },
+              "severity": { "type": "string" },
+              "summary": { "type": "string" }
+            }
+          }
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

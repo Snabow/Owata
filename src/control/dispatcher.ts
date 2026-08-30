@@ -362,6 +362,13 @@ export class Dispatcher {
         raw = await this.adapters.reviewer.review({
           cycle: this.handoff.snapshot(cycle),
           request,
+          dispatch: {
+            dispatch_id: dispatch.dispatch_id,
+            attempt_number: dispatch.attempt_number,
+            fence_token: dispatch.fence_token,
+            lease_expires_at: dispatch.lease_expires_at,
+          },
+          signal: abort.signal,
         });
       }
     } catch (err) {
@@ -1018,5 +1025,16 @@ export function classifyFailure(code: string): FailureClass {
   if (code === "RESULT_INVALID") return "RESULT_INVALID";
   if (code === "RESULT_STALE" || code === "STALE_FENCE") return "RESULT_STALE";
   if (code === "CAPABILITY_BLOCK") return "CAPABILITY_BLOCK";
+  if (code === "CREDENTIAL_UNAVAILABLE") return "CREDENTIAL_UNAVAILABLE";
+  if (code === "AGENT_UNAVAILABLE") return "AGENT_UNAVAILABLE";
+  if (
+    code === "TARGET_SHA_REQUIRED" ||
+    code === "TARGET_SHA_UNRESOLVED" ||
+    code === "TARGET_SHA_MISMATCH" ||
+    code === "WORKSPACE_DIRTY" ||
+    code === "SOURCE_MUTATION"
+  ) {
+    return "RESULT_INVALID";
+  }
   return "RUNTIME_ERROR";
 }
