@@ -49,6 +49,7 @@ export interface PersistB2FullEvidenceArgs {
     metadataPath?: string;
     resultEnvelopePath?: string;
   }[];
+  extraManifest?: Record<string, unknown>;
 }
 
 export interface PersistB2FullEvidenceResult {
@@ -232,6 +233,7 @@ export function persistB2FullEvidence(
     evidence_rel:
       relative(args.owataRepoRoot, args.evidenceDir).replace(/\\/g, "/") ||
       args.evidenceDir,
+    ...(args.extraManifest ?? {}),
   };
 
   const manifestPath = join(args.evidenceDir, "manifest.json");

@@ -102,6 +102,13 @@ export function compileProgramControlInstruction(
     result_envelope_path: args.resultEnvelopeRelPath,
   };
 
+  const canaryMarker = "INITIAL_BUILD_POLICY=DISPATCH_REVIEW";
+  const canaryDispatchReviewRequired =
+    String(body.stop_condition ?? "").includes(canaryMarker) ||
+    body.authoritative_references.some((r) => r.includes(canaryMarker));
+
+  const recoveryTarget = args.cycle.recovery_target_request_id;
+
   const text = [
     "# Program Control Instruction",
     "",
@@ -112,8 +119,10 @@ export function compileProgramControlInstruction(
     "YOU MUST:",
     "- Decide solely from the durable cycle snapshot and envelopes below",
     "- Return exactly one program_control_decision envelope",
+    "- For BUILD: valid when initial work is required",
     "- For REWORK: authorize only finding IDs present on the latest Reviewer REWORK for the exact latest candidate",
     "- For ACCEPT: require latest Reviewer PASS for the exact latest candidate with no newer candidate and no unresolved REWORK/BLOCK",
+    "- For RETRY: allowed ONLY when cycle.recovery_target_request_id is non-null and the durable cycle is in a retryable recovery context",
     "",
     "YOU MUST NOT:",
     "- Implement code or act as Builder",
@@ -122,6 +131,27 @@ export function compileProgramControlInstruction(
     "- Suppress Reviewer findings",
     "- Use Browser Relay or chat history as authority",
     "- Modify repository tracked files or create commits",
+    "- Use RETRY to mean \"route the current candidate to Reviewer\" (that is NOT RETRY; review routing is durable on_builder_candidate=DISPATCH_REVIEW policy)",
+    "- Return RETRY when recovery_target_request_id is null",
+    "",
+    ...(canaryDispatchReviewRequired
+      ? [
+          "## B2-S2 full no-relay canary durable contract (authoritative)",
+          `stop_condition / authoritative_references require ${canaryMarker}.`,
+          "The initial BUILD decision MUST set install_policy.on_builder_candidate=DISPATCH_REVIEW.",
+          "AWAIT_PC does NOT satisfy this canary contract.",
+          "First candidate must reach Reviewer before another Program Control semantic decision.",
+          "Browser Relay is prohibited as product transport.",
+          "",
+        ]
+      : []),
+    "## Decision guidance (context; Dispatcher authority gates remain authoritative)",
+    "- BUILD: initial work / no candidate yet",
+    "- REWORK: only against latest exact Reviewer REWORK + authorized finding IDs",
+    "- ACCEPT: only after exact latest Reviewer PASS",
+    "- RETRY: only for durable recovery_target_request_id (never a substitute for review routing)",
+    `- Current cycle.recovery_target_request_id: ${recoveryTarget == null ? "null (RETRY forbidden)" : JSON.stringify(recoveryTarget)}`,
+    "- REDESIGN / HUMAN_GATE / ABORT: retain existing semantics",
     "",
     "## Canonical Control Request + Durable State",
     stableStringify(canonical),

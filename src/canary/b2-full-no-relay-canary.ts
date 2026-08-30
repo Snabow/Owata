@@ -29,8 +29,15 @@ import {
   GatewayReviewerAdapter,
 } from "../reviewer/index.js";
 import { persistB2FullEvidence } from "./b2-full-evidence-export.js";
+import {
+  B2_S2_CANARY_EXTERNAL_RESULT_REJECTED,
+  B2_S2_CANARY_INITIAL_PC_CONTRACT_VIOLATION,
+  B2_S2_CANARY_WP_REF,
+  initialPcControlRequest,
+  stopConditionRequiresDispatchReview,
+} from "./b2-full-canary-contract.js";
+import { runB2FullCanaryDriver } from "./b2-full-canary-driver.js";
 import { B2FullCanaryInvocationBudget } from "./b2-full-invocation-budget.js";
-import { ControlError } from "../control/types.js";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -293,11 +300,13 @@ async function main(): Promise<number> {
     };
 
     const project = store.createProject("b2-full-no-relay-canary");
+    // Canary-local: one attempt per request (no same-request paid retry).
+    // Product default maxDispatchRetries remains unchanged for non-canary cycles.
     const cycle = handoff.createCycle({
       projectId: project.project_id,
-      workPackageRef: "WP-003-B2-S2",
+      workPackageRef: B2_S2_CANARY_WP_REF,
       baseSha,
-      maxDispatchRetries: 4,
+      maxDispatchRetries: 1,
     });
 
     const pcGateway = new GatewayProgramControlAdapter({
@@ -326,7 +335,7 @@ async function main(): Promise<number> {
     });
     await reviewerGateway.refreshProbe();
 
-    // F03: hard pre-spawn budgets (canary-only)
+    // F03: hard pre-spawn budgets (canary-only) — EXTERNAL INVOCATION ATTEMPTS
     const budget = new B2FullCanaryInvocationBudget();
     const pcDecide = pcGateway.decide.bind(pcGateway);
     pcGateway.decide = async (input) => {
@@ -378,32 +387,20 @@ async function main(): Promise<number> {
       },
     );
 
-    // Drive full cycle without Browser Relay
-    let final;
-    let budgetExceeded = false;
-    let budgetDetail: string | null = null;
-    try {
-      final = await dispatcher.runUntilStable(cycle.cycle_id, 48);
-    } catch (err) {
-      if (
-        err instanceof ControlError &&
-        err.code === "CANARY_INVOCATION_BUDGET_EXCEEDED"
-      ) {
-        budgetExceeded = true;
-        budgetDetail = err.message;
-        final = {
-          cycle: handoff.requireCycle(cycle.cycle_id),
-          steps: [],
-        };
-      } else {
-        throw err;
-      }
-    }
+    // Canary driver: seed durable INITIAL_BUILD_POLICY=DISPATCH_REVIEW,
+    // step manually, fail-fast on rejected external (no Dispatcher hard-code).
+    const driver = await runB2FullCanaryDriver({
+      handoff,
+      dispatcher,
+      cycleId: cycle.cycle_id,
+      maxSteps: 48,
+    });
 
     const envelopes = handoff.listEnvelopes(cycle.cycle_id);
-    const pcDecisions = envelopes
+    const pcDecisionBodies = envelopes
       .filter((e) => e.kind === "program_control_decision")
-      .map((e) => (e.body as PcDecisionBody).decision);
+      .map((e) => e.body as PcDecisionBody);
+    const pcDecisions = pcDecisionBodies.map((b) => b.decision);
     const reviewerVerdicts = envelopes
       .filter((e) => e.kind === "reviewer_result")
       .map((e) => (e.body as ReviewerResultBody).verdict);
@@ -415,25 +412,63 @@ async function main(): Promise<number> {
       })
       .filter((s): s is string => typeof s === "string" && s.length > 0);
 
+    const externalInvocations = budget.snapshot();
+    const semanticAccepted = {
+      program_control: pcDecisions.length,
+      builder: candidateShas.length,
+      reviewer: reviewerVerdicts.length,
+      total: pcDecisions.length + candidateShas.length + reviewerVerdicts.length,
+    };
+
     const candidatesDiffer =
       candidateShas.length >= 2 &&
       new Set(candidateShas).size === candidateShas.length;
 
-    const status = budgetExceeded
-      ? "CANARY_INVOCATION_BUDGET_EXCEEDED"
-      : final.cycle.state === "ACCEPTED" &&
-          pcDecisions.length === 3 &&
-          pcDecisions[0] === "BUILD" &&
-          pcDecisions[1] === "REWORK" &&
-          pcDecisions[2] === "ACCEPT" &&
-          reviewerVerdicts.length === 2 &&
-          reviewerVerdicts[0] === "REWORK" &&
-          reviewerVerdicts[1] === "PASS" &&
-          candidateShas.length === 2 &&
-          candidatesDiffer &&
-          final.cycle.accepted_candidate_sha === candidateShas[1]
-        ? "B2_S2_CANARY_PASS"
-        : "FAIL";
+    const initialReq = initialPcControlRequest(handoff, cycle.cycle_id);
+    const durableContractSeen = initialReq
+      ? stopConditionRequiresDispatchReview(initialReq.body.stop_condition)
+      : false;
+
+    const lineagePass =
+      driver.status === "ACCEPTED" &&
+      driver.cycle.state === "ACCEPTED" &&
+      pcDecisions.length === 3 &&
+      pcDecisions[0] === "BUILD" &&
+      pcDecisions[1] === "REWORK" &&
+      pcDecisions[2] === "ACCEPT" &&
+      reviewerVerdicts.length === 2 &&
+      reviewerVerdicts[0] === "REWORK" &&
+      reviewerVerdicts[1] === "PASS" &&
+      candidateShas.length === 2 &&
+      candidatesDiffer &&
+      driver.cycle.accepted_candidate_sha === candidateShas[1] &&
+      driver.initialPcPolicy === "DISPATCH_REVIEW" &&
+      durableContractSeen;
+
+    const status =
+      driver.status === B2_S2_CANARY_EXTERNAL_RESULT_REJECTED
+        ? B2_S2_CANARY_EXTERNAL_RESULT_REJECTED
+        : driver.status === B2_S2_CANARY_INITIAL_PC_CONTRACT_VIOLATION
+          ? B2_S2_CANARY_INITIAL_PC_CONTRACT_VIOLATION
+          : driver.status === "CANARY_INVOCATION_BUDGET_EXCEEDED"
+            ? "CANARY_INVOCATION_BUDGET_EXCEEDED"
+            : lineagePass
+              ? "B2_S2_CANARY_PASS"
+              : "FAIL";
+
+    const failFastDetail = driver.externalRejection
+      ? {
+          code: B2_S2_CANARY_EXTERNAL_RESULT_REJECTED,
+          ...driver.externalRejection,
+          external_invocation_counts: externalInvocations,
+        }
+      : driver.status === B2_S2_CANARY_INITIAL_PC_CONTRACT_VIOLATION
+        ? {
+            code: B2_S2_CANARY_INITIAL_PC_CONTRACT_VIOLATION,
+            detail: driver.detail,
+            initial_pc_policy: driver.initialPcPolicy,
+          }
+        : null;
 
     const persisted = persistB2FullEvidence({
       evidenceDir,
@@ -445,12 +480,12 @@ async function main(): Promise<number> {
       cycleId: cycle.cycle_id,
       baseSha,
       candidateShas,
-      acceptedCandidateSha: final.cycle.accepted_candidate_sha,
+      acceptedCandidateSha: driver.cycle.accepted_candidate_sha,
       pcDecisions,
       reviewerVerdicts,
-      builderInvocations: budget.snapshot().builder,
-      reviewerInvocations: budget.snapshot().reviewer,
-      pcInvocations: budget.snapshot().program_control,
+      builderInvocations: externalInvocations.builder,
+      reviewerInvocations: externalInvocations.reviewer,
+      pcInvocations: externalInvocations.program_control,
       humanContinuityActions: 0,
       browserRelayUsed: false,
       pcBindingId: pcBinding.bindingId,
@@ -465,24 +500,50 @@ async function main(): Promise<number> {
       handoff,
       status,
       artifactPaths: listExecutionArtifacts(stateDir),
+      extraManifest: {
+        initial_pc_canary_policy_durable: durableContractSeen,
+        initial_pc_dispatch_review_required:
+          driver.initialPcPolicy === "DISPATCH_REVIEW",
+        invalid_initial_await_pc_rejected:
+          driver.status === B2_S2_CANARY_INITIAL_PC_CONTRACT_VIOLATION &&
+          driver.initialPcPolicy === "AWAIT_PC",
+        real_canary_external_fail_fast:
+          driver.status === B2_S2_CANARY_EXTERNAL_RESULT_REJECTED ||
+          driver.status === B2_S2_CANARY_INITIAL_PC_CONTRACT_VIOLATION,
+        general_dispatch_retry_preserved: true,
+        max_dispatch_retries_canary_local: 1,
+        external_fail_fast_enforced: true,
+        fail_fast_detail: failFastDetail,
+        initial_pc_install_policy: driver.initialPcPolicy,
+        semantic_accepted_counts: semanticAccepted,
+        external_invocation_counts: externalInvocations,
+      },
     });
 
     const evidence = {
       status,
       cycle_id: cycle.cycle_id,
-      cycle_state: final.cycle.state,
+      cycle_state: driver.cycle.state,
       pc_decisions: pcDecisions,
       reviewer_verdicts: reviewerVerdicts,
       candidate_shas: candidateShas,
-      accepted_candidate_sha: final.cycle.accepted_candidate_sha,
+      accepted_candidate_sha: driver.cycle.accepted_candidate_sha,
       candidates_differ: candidatesDiffer,
       human_continuity_actions: 0,
       browser_relay_used: false,
-      invocation_budget: budget.snapshot(),
-      budget_exceeded: budgetExceeded,
-      budget_detail: budgetDetail,
-      prior_diagnostic_run:
+      external_invocation_counts: externalInvocations,
+      semantic_accepted_counts: semanticAccepted,
+      initial_pc_canary_policy_durable: durableContractSeen,
+      initial_pc_policy: driver.initialPcPolicy,
+      external_fail_fast_enforced: true,
+      fail_fast_detail: failFastDetail,
+      driver_status: driver.status,
+      driver_detail: driver.detail,
+      general_dispatch_retry_preserved: true,
+      prior_diagnostic_runs: [
         "evidence/artifacts/wp-003-b2-s2/run_2026-08-30T01-44-57-755Z",
+        "evidence/artifacts/wp-003-b2-s2/run_2026-08-30T02-13-47-129Z",
+      ],
       pc_binding: pcBinding.bindingId,
       builder_binding: builderBinding.bindingId,
       reviewer_binding: reviewerBinding.bindingId,
