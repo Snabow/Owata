@@ -132,12 +132,23 @@ test("owata --version remains PASS", () => {
 });
 
 test("owata status remains PASS", () => {
-  const result = spawnSync(process.execPath, [cliJs, "status"], {
-    encoding: "utf8",
-    windowsHide: true,
-  });
-  assert.equal(result.status, 0);
-  assert.match(result.stdout, /Project: OWATA/);
-  assert.match(result.stdout, /State: Genesis/);
-  assert.equal(main(["node", "owata", "status"]), 0);
+  const dir = mkdtempSync(join(tmpdir(), "owata-cli-status-"));
+  try {
+    const result = spawnSync(process.execPath, [cliJs, "status"], {
+      encoding: "utf8",
+      windowsHide: true,
+      env: { ...process.env, OWATA_STATE_DIR: dir },
+    });
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Project: OWATA/);
+    assert.match(result.stdout, /Durable state: ABSENT/);
+    assert.doesNotMatch(result.stdout, /State: Genesis/);
+    assert.doesNotMatch(result.stdout, /Bootstrap control core/);
+    process.env.OWATA_STATE_DIR = dir;
+    assert.equal(main(["node", "owata", "status"]), 0);
+    delete process.env.OWATA_STATE_DIR;
+  } finally {
+    delete process.env.OWATA_STATE_DIR;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

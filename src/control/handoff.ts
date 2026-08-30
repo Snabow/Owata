@@ -736,6 +736,17 @@ export class HandoffStore {
     return row ? mapCycle(row) : undefined;
   }
 
+  /** Deterministic newest-first listing for status / reconstruction. */
+  listCyclesNewestFirst(): CycleRecord[] {
+    const rows = this.store.db
+      .prepare(
+        `SELECT * FROM cycles
+         ORDER BY updated_at DESC, cycle_id DESC`,
+      )
+      .all() as Array<Record<string, unknown>>;
+    return rows.map(mapCycle);
+  }
+
   requireCycle(cycleId: string): CycleRecord {
     const cycle = this.getCycle(cycleId);
     if (!cycle) {

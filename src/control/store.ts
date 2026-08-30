@@ -284,6 +284,17 @@ export class ControlStore {
     return row ? mapProject(row) : null;
   }
 
+  /** Deterministic newest-first listing for status / reconstruction. */
+  listProjectsNewestFirst(): ProjectRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM projects
+         ORDER BY updated_at DESC, project_id DESC`,
+      )
+      .all() as Array<Record<string, unknown>>;
+    return rows.map(mapProject);
+  }
+
   createWork(
     projectId: string,
     title: string,

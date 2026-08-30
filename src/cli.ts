@@ -5,6 +5,8 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureStateDirectory } from "./state-directory.js";
+import { formatStatus, readStatusSnapshot } from "./status.js";
+import { ControlError } from "./control/types.js";
 
 const VERSION = "0.0.1-genesis";
 
@@ -16,10 +18,21 @@ function printVersion(): void {
   process.stdout.write(`owata ${VERSION}\n`);
 }
 
-function printStatus(): void {
-  process.stdout.write("Project: OWATA\n");
-  process.stdout.write("State: Genesis\n");
-  process.stdout.write("Next: Bootstrap control core\n");
+export function runStatus(stateDir: string = defaultStateDir()): number {
+  try {
+    const snapshot = readStatusSnapshot(stateDir);
+    process.stdout.write(formatStatus(snapshot));
+    return 0;
+  } catch (err) {
+    const message =
+      err instanceof ControlError
+        ? `${err.code}: ${err.message}`
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    process.stderr.write(`owata status failed: ${message}\n`);
+    return 1;
+  }
 }
 
 function checkRuntime(): boolean {
@@ -74,8 +87,7 @@ export function main(argv: string[]): number {
   }
 
   if (args.length === 1 && args[0] === "status") {
-    printStatus();
-    return 0;
+    return runStatus();
   }
 
   printUsage();
