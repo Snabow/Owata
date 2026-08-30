@@ -1,0 +1,31 @@
+{
+  "protocol": "owata.handoff/1",
+  "envelope_id": "env_25",
+  "kind": "control_request",
+  "cycle_id": "cyc_3",
+  "request_id": "req_24",
+  "from_role": "dispatcher",
+  "to_role": "reviewer",
+  "created_at": "2026-08-30T01:01:10.909Z",
+  "body": {
+    "action": "REVIEW",
+    "target_role": "reviewer",
+    "work_package_ref": "WP-003-B2-S1",
+    "base_sha": "e6bfb65e45c433f3529d2702dccbeaaee255fd54",
+    "target_sha": "e6bfb65e45c433f3529d2702dccbeaaee255fd54",
+    "authoritative_references": [
+      "work-packages/WP-003-B2-S1",
+      "decisions/DEC-003-001-wp003-architecture.md"
+    ],
+    "required_capabilities": [
+      "repository_read",
+      "exact_checkout",
+      "command_execution"
+    ],
+    "expected_result_kind": "reviewer_result",
+    "stop_condition": "exact target_sha required; no Builder chat",
+    "authorized_by_decision_id": "env_12",
+    "authorized_finding_ids": [],
+    "retry_of_request_id": null
+  }
+}

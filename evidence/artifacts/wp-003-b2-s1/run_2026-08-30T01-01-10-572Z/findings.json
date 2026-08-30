@@ -1,0 +1,7 @@
+[
+  {
+    "finding_id": "F-STATUS-001",
+    "severity": "major",
+    "summary": "Acceptance mismatch: ACCEPTANCE.md:4 requires STATUS=READY, but STATUS.md:1 contains STATUS=BROKEN. The candidate therefore does not satisfy its stated acceptance contract."
+  }
+]
