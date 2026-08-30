@@ -46,8 +46,9 @@ function git(args: string[], cwd: string): string {
 }
 
 /**
- * Fail-closed: target_sha must be a full immutable commit object ID.
- * Rejects HEAD, short prefixes, branches, tags, and revision expressions.
+ * Fail-closed: target_sha must be a raw full immutable commit object ID.
+ * Rejects whitespace, uppercase, HEAD, short prefixes, branches, tags, and
+ * revision expressions. No trim/lowercase normalization of the input.
  */
 export function assertExactCommitObjectId(targetSha: string): string {
   if (typeof targetSha !== "string" || targetSha.length === 0) {
@@ -56,37 +57,36 @@ export function assertExactCommitObjectId(targetSha: string): string {
       "target_sha must be a non-empty full commit object id",
     );
   }
-  const normalized = targetSha.trim().toLowerCase();
-  if (!FULL_SHA1.test(normalized)) {
+  if (!FULL_SHA1.test(targetSha)) {
     throw new ControlError(
       "TARGET_SHA_INVALID",
-      `target_sha must be full 40-char hex commit id, got: ${targetSha}`,
+      `target_sha must be exact lowercase 40-char hex commit id, got: ${JSON.stringify(targetSha)}`,
     );
   }
-  return normalized;
+  return targetSha;
 }
 
 export function resolveExactCommitSha(
   repoPath: string,
   targetSha: string,
 ): string {
-  const normalized = assertExactCommitObjectId(targetSha);
+  const exact = assertExactCommitObjectId(targetSha);
   let resolved: string;
   try {
     resolved = git(
-      ["rev-parse", "--verify", `${normalized}^{commit}`],
+      ["rev-parse", "--verify", `${exact}^{commit}`],
       repoPath,
-    ).toLowerCase();
+    );
   } catch {
     throw new ControlError(
       "TARGET_SHA_UNRESOLVED",
-      `target_sha unresolved: ${normalized}`,
+      `target_sha unresolved: ${exact}`,
     );
   }
-  if (resolved !== normalized) {
+  if (resolved !== exact) {
     throw new ControlError(
       "TARGET_SHA_MISMATCH",
-      `resolved commit ${resolved} != target_sha ${normalized}`,
+      `resolved commit ${resolved} != target_sha ${exact}`,
     );
   }
   return resolved;
@@ -220,41 +220,82 @@ function worktreeStillRegistered(repoPath: string, workspacePath: string): boole
 
 /**
  * Remove disposable Reviewer workspace and verify it is gone.
- * Fail closed: cleanup failure throws REVIEWER_WORKSPACE_CLEANUP_FAILED.
+ * Fail closed: every failure in this boundary maps to
+ * REVIEWER_WORKSPACE_CLEANUP_FAILED (never leaks WORKTREE_ERROR).
  */
 export function removeReviewerWorkspace(args: {
   repoPath: string;
   workspacePath: string;
   workspaceId: string;
+  /** Test seam for verification registration check. */
+  verifyStillRegistered?: (
+    repoPath: string,
+    workspacePath: string,
+  ) => boolean;
 }): ReviewerWorkspaceCleanupProof {
-  let removeAttempted = false;
   try {
-    removeAttempted = true;
-    git(["worktree", "remove", "--force", args.workspacePath], args.repoPath);
+    let removeAttempted = false;
+    try {
+      removeAttempted = true;
+      git(["worktree", "remove", "--force", args.workspacePath], args.repoPath);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new ControlError(
+        "REVIEWER_WORKSPACE_CLEANUP_FAILED",
+        `worktree remove failed: ${message}`,
+      );
+    }
+
+    const checkRegistered =
+      args.verifyStillRegistered ?? worktreeStillRegistered;
+    let registered: boolean;
+    try {
+      registered = checkRegistered(args.repoPath, args.workspacePath);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new ControlError(
+        "REVIEWER_WORKSPACE_CLEANUP_FAILED",
+        `worktree list verification failed: ${message}`,
+      );
+    }
+
+    let pathExists: boolean;
+    try {
+      pathExists = existsSync(args.workspacePath);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new ControlError(
+        "REVIEWER_WORKSPACE_CLEANUP_FAILED",
+        `filesystem verification failed: ${message}`,
+      );
+    }
+
+    const proof: ReviewerWorkspaceCleanupProof = {
+      workspace_id: args.workspaceId,
+      workspace_path: args.workspacePath,
+      remove_attempted: removeAttempted,
+      registered_after_cleanup: registered,
+      path_exists_after_cleanup: pathExists,
+      workspace_removed: !registered && !pathExists,
+    };
+
+    if (!proof.workspace_removed) {
+      throw new ControlError(
+        "REVIEWER_WORKSPACE_CLEANUP_FAILED",
+        `workspace still present after cleanup: registered=${registered} path_exists=${pathExists}`,
+      );
+    }
+    return proof;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    if (
+      err instanceof ControlError &&
+      err.code === "REVIEWER_WORKSPACE_CLEANUP_FAILED"
+    ) {
+      throw err;
+    }
     throw new ControlError(
       "REVIEWER_WORKSPACE_CLEANUP_FAILED",
-      `worktree remove failed: ${message}`,
+      err instanceof Error ? err.message : String(err),
     );
   }
-
-  const registered = worktreeStillRegistered(args.repoPath, args.workspacePath);
-  const pathExists = existsSync(args.workspacePath);
-  const proof: ReviewerWorkspaceCleanupProof = {
-    workspace_id: args.workspaceId,
-    workspace_path: args.workspacePath,
-    remove_attempted: removeAttempted,
-    registered_after_cleanup: registered,
-    path_exists_after_cleanup: pathExists,
-    workspace_removed: !registered && !pathExists,
-  };
-
-  if (!proof.workspace_removed) {
-    throw new ControlError(
-      "REVIEWER_WORKSPACE_CLEANUP_FAILED",
-      `workspace still present after cleanup: registered=${registered} path_exists=${pathExists}`,
-    );
-  }
-  return proof;
 }

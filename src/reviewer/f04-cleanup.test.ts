@@ -313,6 +313,32 @@ test("F04 removeReviewerWorkspace: successful cleanup proof", () => {
   }
 });
 
+test("F04 worktree-list verification failure maps to CLEANUP_FAILED", () => {
+  const root = mkdtempSync(join(tmpdir(), "owata-f04-list-"));
+  try {
+    const repoPath = join(root, "repo");
+    const sha = initRepo(repoPath);
+    const workspacePath = join(root, "wt");
+    git(["worktree", "add", "--detach", workspacePath, sha], repoPath);
+    assert.throws(
+      () =>
+        removeReviewerWorkspace({
+          repoPath,
+          workspacePath,
+          workspaceId: "wt-list-fail",
+          verifyStillRegistered: () => {
+            throw new ControlError("WORKTREE_ERROR", "injected list failure");
+          },
+        }),
+      (err: unknown) =>
+        err instanceof ControlError &&
+        err.code === "REVIEWER_WORKSPACE_CLEANUP_FAILED",
+    );
+  } finally {
+    cleanup(root);
+  }
+});
+
 test("F04 reviewer failure path still removes workspace", async () => {
   const root = mkdtempSync(join(tmpdir(), "owata-f04-rej-"));
   try {

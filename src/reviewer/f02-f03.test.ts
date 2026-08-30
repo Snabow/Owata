@@ -32,37 +32,45 @@ function initRepo(repoPath: string): string {
   return git(["rev-parse", "HEAD"], repoPath);
 }
 
-test("F02: full exact commit accepted", () => {
+test("F02: full exact lowercase commit accepted", () => {
   const root = mkdtempSync(join(tmpdir(), "owata-f02-ok-"));
   try {
     const sha = initRepo(join(root, "repo"));
+    assert.equal(assertExactCommitObjectId(sha), sha);
     assert.equal(resolveExactCommitSha(join(root, "repo"), sha), sha);
-    assert.equal(assertExactCommitObjectId(sha.toUpperCase()), sha);
   } finally {
     cleanup(root);
   }
 });
 
-test("F02: HEAD / HEAD~1 / short / branch rejected", () => {
+test("F02: uppercase / whitespace / symbolic / short rejected", () => {
   const root = mkdtempSync(join(tmpdir(), "owata-f02-rej-"));
   try {
     const sha = initRepo(join(root, "repo"));
     const repo = join(root, "repo");
     git(["branch", "feature"], repo);
     git(["tag", "v1"], repo);
-    for (const bad of ["HEAD", "HEAD~1", "HEAD^", "feature", "v1", sha.slice(0, 7)]) {
+    const invalidForms = [
+      sha.toUpperCase(),
+      ` ${sha}`,
+      `${sha} `,
+      `\t${sha}`,
+      `${sha}\n`,
+      "HEAD",
+      "HEAD~1",
+      "HEAD^",
+      "feature",
+      "v1",
+      sha.slice(0, 7),
+      "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+    ];
+    for (const bad of invalidForms) {
       assert.throws(
         () => resolveExactCommitSha(repo, bad),
         (err: unknown) =>
-          err instanceof ControlError &&
-          (err.code === "TARGET_SHA_INVALID" || err.code === "TARGET_SHA_UNRESOLVED"),
+          err instanceof ControlError && err.code === "TARGET_SHA_INVALID",
       );
     }
-    assert.throws(
-      () => resolveExactCommitSha(repo, "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"),
-      (err: unknown) =>
-        err instanceof ControlError && err.code === "TARGET_SHA_INVALID",
-    );
     assert.throws(
       () =>
         resolveExactCommitSha(
