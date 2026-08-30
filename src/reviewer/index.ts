@@ -25,6 +25,7 @@ export type {
   CreateReviewerWorkspaceArgs,
   ReviewerImmutabilityProof,
   ReviewerWorkspace,
+  ReviewerWorkspaceCleanupProof,
 } from "./workspace.js";
 export { GatewayReviewerAdapter, extractJsonObject } from "./gateway.js";
 export type { GatewayReviewerAdapterOptions } from "./gateway.js";

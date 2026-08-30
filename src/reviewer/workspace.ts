@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { ControlError } from "../control/types.js";
 
@@ -198,9 +198,63 @@ export function verifyReviewerWorkspaceImmutable(args: {
   };
 }
 
+export interface ReviewerWorkspaceCleanupProof {
+  workspace_id: string;
+  workspace_path: string;
+  remove_attempted: boolean;
+  registered_after_cleanup: boolean;
+  path_exists_after_cleanup: boolean;
+  workspace_removed: boolean;
+}
+
+function worktreeStillRegistered(repoPath: string, workspacePath: string): boolean {
+  const list = git(["worktree", "list", "--porcelain"], repoPath);
+  const normalized = workspacePath.replace(/\\/g, "/").toLowerCase();
+  for (const line of list.split(/\r?\n/)) {
+    if (!line.startsWith("worktree ")) continue;
+    const path = line.slice("worktree ".length).replace(/\\/g, "/").toLowerCase();
+    if (path === normalized) return true;
+  }
+  return false;
+}
+
+/**
+ * Remove disposable Reviewer workspace and verify it is gone.
+ * Fail closed: cleanup failure throws REVIEWER_WORKSPACE_CLEANUP_FAILED.
+ */
 export function removeReviewerWorkspace(args: {
   repoPath: string;
   workspacePath: string;
-}): void {
-  git(["worktree", "remove", "--force", args.workspacePath], args.repoPath);
+  workspaceId: string;
+}): ReviewerWorkspaceCleanupProof {
+  let removeAttempted = false;
+  try {
+    removeAttempted = true;
+    git(["worktree", "remove", "--force", args.workspacePath], args.repoPath);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new ControlError(
+      "REVIEWER_WORKSPACE_CLEANUP_FAILED",
+      `worktree remove failed: ${message}`,
+    );
+  }
+
+  const registered = worktreeStillRegistered(args.repoPath, args.workspacePath);
+  const pathExists = existsSync(args.workspacePath);
+  const proof: ReviewerWorkspaceCleanupProof = {
+    workspace_id: args.workspaceId,
+    workspace_path: args.workspacePath,
+    remove_attempted: removeAttempted,
+    registered_after_cleanup: registered,
+    path_exists_after_cleanup: pathExists,
+    workspace_removed: !registered && !pathExists,
+  };
+
+  if (!proof.workspace_removed) {
+    throw new ControlError(
+      "REVIEWER_WORKSPACE_CLEANUP_FAILED",
+      `workspace still present after cleanup: registered=${registered} path_exists=${pathExists}`,
+    );
+  }
+  return proof;
 }

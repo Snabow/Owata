@@ -92,6 +92,11 @@ export interface GatewayReviewerAdapterOptions {
    * Real path is always fail-closed. Default true.
    */
   failClosedNoFakeFallback?: boolean;
+  /**
+   * Test seam / override for disposable workspace cleanup.
+   * Production default: removeReviewerWorkspace (fail-closed).
+   */
+  cleanupWorkspace?: typeof removeReviewerWorkspace;
 }
 
 /**
@@ -183,7 +188,9 @@ export class GatewayReviewerAdapter implements ReviewerAdapter {
       attemptNumber: dispatch.attempt_number,
     });
 
-    let accepted: ReturnType<typeof assertStrictReviewerResult> | null = null;
+    let pendingResult: ReturnType<typeof assertStrictReviewerResult> | null =
+      null;
+    let reviewError: unknown = null;
     try {
       const compiled = compileReviewerInstruction({
         request: input.request,
@@ -310,20 +317,56 @@ export class GatewayReviewerAdapter implements ReviewerAdapter {
         );
       }
 
-      accepted = parsed;
-      return parsed;
-    } finally {
-      // F04: cleanup on both success and failure after durable artifacts captured
-      try {
-        removeReviewerWorkspace({
-          repoPath: this.opts.repoPath,
-          workspacePath: workspace.workspacePath,
-        });
-      } catch {
-        // Best-effort cleanup; accepted result already captured when present
-        void accepted;
-      }
+      // Hold pending only; cleanup must succeed before return (F04).
+      pendingResult = parsed;
+      writeText(
+        `${artifacts.executionDir}/reviewer-result-pending.json`,
+        JSON.stringify(parsed, null, 2),
+      );
+    } catch (err) {
+      reviewError = err;
     }
+
+    // F04: isolation cleanup is part of the acceptance boundary.
+    // Proof is written OUTSIDE the disposable workspace (execution artifacts).
+    const cleanup = this.opts.cleanupWorkspace ?? removeReviewerWorkspace;
+    try {
+      const proof = cleanup({
+        repoPath: this.opts.repoPath,
+        workspacePath: workspace.workspacePath,
+        workspaceId: workspace.workspaceId,
+      });
+      writeText(
+        `${artifacts.executionDir}/workspace-cleanup-proof.json`,
+        JSON.stringify(proof, null, 2),
+      );
+      if (!proof.workspace_removed) {
+        throw new ControlError(
+          "REVIEWER_WORKSPACE_CLEANUP_FAILED",
+          `cleanup proof workspace_removed=false (registered=${proof.registered_after_cleanup} path_exists=${proof.path_exists_after_cleanup})`,
+        );
+      }
+    } catch (cleanupErr) {
+      // Captured pending result remains diagnostic only — never return it.
+      if (cleanupErr instanceof ControlError) {
+        throw cleanupErr;
+      }
+      throw new ControlError(
+        "REVIEWER_WORKSPACE_CLEANUP_FAILED",
+        cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+      );
+    }
+
+    if (reviewError) {
+      throw reviewError;
+    }
+    if (!pendingResult) {
+      throw new ControlError(
+        "RESULT_INVALID",
+        "Reviewer produced no pending result after cleanup",
+      );
+    }
+    return pendingResult;
   }
 
   /** Wrap raw body when tests inject body-only payloads. */

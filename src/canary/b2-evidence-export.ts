@@ -37,6 +37,8 @@ export interface PersistB2ReviewerEvidenceArgs {
   metadataPath?: string;
   resultEnvelopePath?: string;
   immutabilityProofPath?: string;
+  workspaceCleanupProofPath?: string;
+  workspaceRemoved?: boolean;
   taskRepoPath: string;
   store: ControlStore;
   handoff: HandoffStore;
@@ -161,6 +163,18 @@ export function persistB2ReviewerEvidence(
     );
   }
 
+  if (
+    safeCopyText(
+      args.workspaceCleanupProofPath,
+      join(args.evidenceDir, "workspace-cleanup-proof.json"),
+    )
+  ) {
+    record(
+      "workspace-cleanup-proof.json",
+      join(args.evidenceDir, "workspace-cleanup-proof.json"),
+    );
+  }
+
   const candidateProof = {
     candidate_sha: args.candidateSha,
     candidate_unchanged: args.candidateUnchanged,
@@ -218,6 +232,7 @@ export function persistB2ReviewerEvidence(
     real_reviewer_invocations: args.realReviewerInvocations,
     candidate_unchanged: args.candidateUnchanged,
     workspace_clean: args.workspaceClean,
+    workspace_removed: args.workspaceRemoved === true,
     candidate_resolution_check: candidateResolutionCheck,
     artifact_hashes: artifactHashes,
     evidence_rel:

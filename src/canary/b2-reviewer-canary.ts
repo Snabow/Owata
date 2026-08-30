@@ -262,13 +262,25 @@ async function main(): Promise<number> {
       ? resultBody!.findings!.length
       : 0;
 
+    const cleanupProofPath = artifacts
+      ? join(artifacts.executionDir, "workspace-cleanup-proof.json")
+      : undefined;
+    let workspaceRemoved = false;
+    if (cleanupProofPath && existsSync(cleanupProofPath)) {
+      const proof = JSON.parse(readFileSync(cleanupProofPath, "utf8")) as {
+        workspace_removed?: boolean;
+      };
+      workspaceRemoved = proof.workspace_removed === true;
+    }
+
     const status =
       finalCycle.state === "AWAITING_PC" &&
       latestDispatch?.state === "ACCEPTED" &&
       verdict === "REWORK" &&
       findingCount >= 1 &&
       candidateUnchanged &&
-      realInvocations === 1
+      realInvocations === 1 &&
+      workspaceRemoved
         ? "B2_S1_CANARY_PASS"
         : "FAIL";
 
@@ -305,6 +317,8 @@ async function main(): Promise<number> {
       immutabilityProofPath: artifacts
         ? join(artifacts.executionDir, "immutability-proof.json")
         : undefined,
+      workspaceCleanupProofPath: cleanupProofPath,
+      workspaceRemoved,
       taskRepoPath: repoPath,
       store,
       handoff,
@@ -323,6 +337,7 @@ async function main(): Promise<number> {
       candidate_sha: candidateSha,
       candidate_unchanged: candidateUnchanged,
       workspace_clean: workspaceClean,
+      workspace_removed: workspaceRemoved,
       real_reviewer_invocations: realInvocations,
       human_continuity_actions: 0,
       auto_rework_before_pc: false,
