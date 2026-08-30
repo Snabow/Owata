@@ -45,14 +45,18 @@ export {
   selectRoutedBinding,
   resolvePinnedBinding,
   sanitizeRoutingObservations,
+  sanitizeQuotaRoutingObservations,
+  observeQuotaForAvailableBindings,
   catalogByBindingId,
   eligibilityRequestFor,
 } from "./routing.js";
 export type {
   AvailabilityProbeFn,
+  QuotaProbeFn,
   RuntimeCatalogEntry,
   RoutingConfig,
   RoutingBlockReason,
   RoutedBindingOutcome,
   DurableRoutingObservation,
+  DurableQuotaRoutingObservation,
 } from "./routing.js";

@@ -30,13 +30,14 @@ import {
   catalogByBindingId,
   eligibilityRequestFor,
   resolvePinnedBinding,
+  sanitizeQuotaRoutingObservations,
   sanitizeRoutingObservations,
   selectRoutedBinding,
   validateRuntimeCatalog,
   type RoutingConfig,
   type RuntimeCatalogEntry,
 } from "./routing.js";
-import type { RoutableRole } from "../router/index.js";
+import type { QuotaObservation, RoutableRole } from "../router/index.js";
 
 export interface DispatcherAdapters {
   programControl: ProgramControlAdapter;
@@ -321,6 +322,7 @@ export class Dispatcher {
     reason: string;
     pinnedBindingId: string | null;
     observations: Parameters<typeof sanitizeRoutingObservations>[0];
+    quotaObservations?: readonly QuotaObservation[];
   }): StepResult {
     const recoveryTarget =
       args.role === "builder" || args.role === "reviewer"
@@ -337,6 +339,9 @@ export class Dispatcher {
         required_capabilities: [...args.request.body.required_capabilities],
         pinned_binding_id: args.pinnedBindingId,
         observations: sanitizeRoutingObservations(args.observations),
+        quota_observations: sanitizeQuotaRoutingObservations(
+          args.quotaObservations ?? [],
+        ),
       },
     });
     return {
@@ -429,6 +434,7 @@ export class Dispatcher {
             reason: pinned.reason,
             pinnedBindingId: pinned.pinned_binding_id,
             observations: pinned.observations,
+            quotaObservations: pinned.quota_observations,
           }),
         };
       }
@@ -454,6 +460,7 @@ export class Dispatcher {
           reason: selected.reason,
           pinnedBindingId: selected.pinned_binding_id,
           observations: selected.observations,
+          quotaObservations: selected.quota_observations,
         }),
       };
     }

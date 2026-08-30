@@ -1129,3 +1129,455 @@ test("reviewer routed selection attributes codex-cli-style binding_id", async ()
     cleanup(dir);
   }
 });
+
+function quotaAvailable(): import("./routing.js").QuotaProbeFn {
+  return () => ({ exhausted: false });
+}
+
+function quotaExhausted(): import("./routing.js").QuotaProbeFn {
+  return () => ({ exhausted: true });
+}
+
+function quotaMalformed(): import("./routing.js").QuotaProbeFn {
+  return () => ({ exhausted: "yes" as unknown as boolean });
+}
+
+function quotaThrows(): import("./routing.js").QuotaProbeFn {
+  return () => {
+    throw new Error("quota probe boom");
+  };
+}
+
+test("S9: no quotaProbe preserves S5 selected binding (UNKNOWN fallback)", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const catalog = catalogByBindingId([
+    {
+      binding_id: "builder-a",
+      role: "builder",
+      adapter: builderA,
+      probe: available(),
+    },
+    {
+      binding_id: "builder-b",
+      role: "builder",
+      adapter: builderB,
+      probe: available(),
+    },
+  ]);
+  const outcome = await selectRoutedBinding({
+    registry,
+    catalog,
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+  });
+  assert.equal(outcome.status, "SELECTED");
+  if (outcome.status === "SELECTED") {
+    assert.equal(outcome.binding_id, "builder-a");
+    assert.equal(outcome.quota_state, "UNKNOWN");
+  }
+});
+
+test("S9: higher-priority UNKNOWN + lower-priority AVAILABLE → AVAILABLE", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  let probedB = false;
+  const catalog = catalogByBindingId([
+    {
+      binding_id: "builder-a",
+      role: "builder",
+      adapter: builderA,
+      probe: available(),
+    },
+    {
+      binding_id: "builder-b",
+      role: "builder",
+      adapter: builderB,
+      probe: available(),
+      quotaProbe: () => {
+        probedB = true;
+        return { exhausted: false };
+      },
+    },
+  ]);
+  const outcome = await selectRoutedBinding({
+    registry,
+    catalog,
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+  });
+  assert.equal(outcome.status, "SELECTED");
+  if (outcome.status === "SELECTED") {
+    assert.equal(outcome.binding_id, "builder-b");
+    assert.equal(outcome.quota_state, "AVAILABLE");
+  }
+  assert.equal(probedB, true);
+});
+
+test("S9: higher-priority EXHAUSTED + lower-priority UNKNOWN → UNKNOWN", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const catalog = catalogByBindingId([
+    {
+      binding_id: "builder-a",
+      role: "builder",
+      adapter: builderA,
+      probe: available(),
+      quotaProbe: quotaExhausted(),
+    },
+    {
+      binding_id: "builder-b",
+      role: "builder",
+      adapter: builderB,
+      probe: available(),
+    },
+  ]);
+  const outcome = await selectRoutedBinding({
+    registry,
+    catalog,
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+  });
+  assert.equal(outcome.status, "SELECTED");
+  if (outcome.status === "SELECTED") {
+    assert.equal(outcome.binding_id, "builder-b");
+    assert.equal(outcome.quota_state, "UNKNOWN");
+  }
+});
+
+test("S9: higher-priority EXHAUSTED + lower-priority AVAILABLE → AVAILABLE", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const catalog = catalogByBindingId([
+    {
+      binding_id: "builder-a",
+      role: "builder",
+      adapter: builderA,
+      probe: available(),
+      quotaProbe: quotaExhausted(),
+    },
+    {
+      binding_id: "builder-b",
+      role: "builder",
+      adapter: builderB,
+      probe: available(),
+      quotaProbe: quotaAvailable(),
+    },
+  ]);
+  const outcome = await selectRoutedBinding({
+    registry,
+    catalog,
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+  });
+  assert.equal(outcome.status, "SELECTED");
+  if (outcome.status === "SELECTED") {
+    assert.equal(outcome.binding_id, "builder-b");
+    assert.equal(outcome.quota_state, "AVAILABLE");
+  }
+});
+
+test("S9: all available candidates EXHAUSTED → NO_QUOTA_ROUTABLE_BINDING", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const catalog = catalogByBindingId([
+    {
+      binding_id: "builder-a",
+      role: "builder",
+      adapter: builderA,
+      probe: available(),
+      quotaProbe: quotaExhausted(),
+    },
+    {
+      binding_id: "builder-b",
+      role: "builder",
+      adapter: builderB,
+      probe: available(),
+      quotaProbe: quotaExhausted(),
+    },
+  ]);
+  const outcome = await selectRoutedBinding({
+    registry,
+    catalog,
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+  });
+  assert.equal(outcome.status, "BLOCKED");
+  if (outcome.status === "BLOCKED") {
+    assert.equal(outcome.reason, "NO_QUOTA_ROUTABLE_BINDING");
+    assert.equal(outcome.quota_observations.length, 2);
+  }
+});
+
+test("S9: quota probe exception / malformed → UNKNOWN fallback", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const throwOutcome = await selectRoutedBinding({
+    registry,
+    catalog: catalogByBindingId([
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+        quotaProbe: quotaThrows(),
+      },
+    ]),
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+  });
+  assert.equal(throwOutcome.status, "SELECTED");
+  if (throwOutcome.status === "SELECTED") {
+    assert.equal(throwOutcome.binding_id, "builder-a");
+    assert.equal(throwOutcome.quota_state, "UNKNOWN");
+  }
+
+  const badOutcome = await selectRoutedBinding({
+    registry,
+    catalog: catalogByBindingId([
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        quotaProbe: quotaMalformed(),
+      },
+    ]),
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+  });
+  assert.equal(badOutcome.status, "SELECTED");
+  if (badOutcome.status === "SELECTED") {
+    assert.equal(badOutcome.binding_id, "builder-b");
+    assert.equal(badOutcome.quota_state, "UNKNOWN");
+  }
+});
+
+test("S9: availability-unavailable binding quotaProbe is not invoked", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  let aQuota = 0;
+  const catalog = catalogByBindingId([
+    {
+      binding_id: "builder-a",
+      role: "builder",
+      adapter: builderA,
+      probe: unavailable("agent"),
+      quotaProbe: () => {
+        aQuota += 1;
+        return { exhausted: false };
+      },
+    },
+    {
+      binding_id: "builder-b",
+      role: "builder",
+      adapter: builderB,
+      probe: available(),
+      quotaProbe: quotaAvailable(),
+    },
+  ]);
+  const outcome = await selectRoutedBinding({
+    registry,
+    catalog,
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+  });
+  assert.equal(outcome.status, "SELECTED");
+  if (outcome.status === "SELECTED") {
+    assert.equal(outcome.binding_id, "builder-b");
+  }
+  assert.equal(aQuota, 0);
+});
+
+test("S9: pinned AVAILABLE / UNKNOWN remain pinned; EXHAUSTED blocks without alternate", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const base = {
+    registry,
+    request: {
+      role: "builder" as const,
+      requiredCapabilities: [...BUILD_CAPS],
+    },
+    pinnedBindingId: "builder-a",
+  };
+
+  const avail = await resolvePinnedBinding({
+    ...base,
+    catalog: catalogByBindingId([
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+        quotaProbe: quotaAvailable(),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        quotaProbe: quotaAvailable(),
+      },
+    ]),
+  });
+  assert.equal(avail.status, "SELECTED");
+  if (avail.status === "SELECTED") {
+    assert.equal(avail.binding_id, "builder-a");
+    assert.equal(avail.quota_state, "AVAILABLE");
+  }
+
+  const unknown = await resolvePinnedBinding({
+    ...base,
+    catalog: catalogByBindingId([
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        quotaProbe: quotaAvailable(),
+      },
+    ]),
+  });
+  assert.equal(unknown.status, "SELECTED");
+  if (unknown.status === "SELECTED") {
+    assert.equal(unknown.binding_id, "builder-a");
+    assert.equal(unknown.quota_state, "UNKNOWN");
+  }
+
+  const exhausted = await resolvePinnedBinding({
+    ...base,
+    catalog: catalogByBindingId([
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+        quotaProbe: quotaExhausted(),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        quotaProbe: quotaAvailable(),
+      },
+    ]),
+  });
+  assert.equal(exhausted.status, "BLOCKED");
+  if (exhausted.status === "BLOCKED") {
+    assert.equal(exhausted.reason, "PINNED_BINDING_QUOTA_EXHAUSTED");
+    assert.equal(exhausted.pinned_binding_id, "builder-a");
+  }
+});
+
+test("S9: sanitizeQuotaRoutingObservations strips raw detail", async () => {
+  const { sanitizeQuotaRoutingObservations } = await import("./routing.js");
+  const cleaned = sanitizeQuotaRoutingObservations([
+    {
+      binding_id: "x",
+      state: "UNKNOWN",
+      detail: "secret remaining_tokens=99",
+    },
+  ]);
+  assert.deepEqual(cleaned, [{ binding_id: "x", state: "UNKNOWN" }]);
+  assert.equal("detail" in cleaned[0]!, false);
+});
+
+test("S9: NO_QUOTA_ROUTABLE_BINDING enters recovery with sanitized quota evidence; no dispatch", async () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock } = openHarness(dir);
+    const project = store.createProject("s9-quota-block");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-004",
+      baseSha: "base",
+    });
+    const pc = new FakeProgramControlAdapter(
+      [
+        pcDecision({
+          decision: "BUILD",
+          authorized_finding_ids: [],
+          install_policy: null,
+        }),
+      ],
+      envClock,
+    );
+    const builderA = new FakeBuilderAdapter([], envClock);
+    const builderB = new FakeBuilderAdapter([], envClock);
+    const reviewer = new FakeReviewerAdapter([], envClock);
+    const registry = multiBuilderRegistry();
+    const catalog: RuntimeCatalogEntry[] = [
+      {
+        binding_id: "pc-main",
+        role: "program_control",
+        adapter: pc,
+        probe: available(),
+      },
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+        quotaProbe: quotaExhausted(),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        quotaProbe: quotaExhausted(),
+      },
+      {
+        binding_id: "reviewer-main",
+        role: "reviewer",
+        adapter: reviewer,
+        probe: available(),
+      },
+    ];
+    const dispatcher = new Dispatcher(
+      handoff,
+      { programControl: pc, builder: builderA, reviewer },
+      { owner: "disp", leaseMs: 60_000, routing: { registry, catalog } },
+    );
+    const last = await dispatcher.runUntilStable(cycle.cycle_id);
+    assert.equal(last.action, "routing_blocked");
+    assert.equal(builderA.invocations, 0);
+    assert.equal(builderB.invocations, 0);
+    const block = handoff.store
+      .listEvents()
+      .find((e) => e.event_type === "cycle.routing_blocked");
+    assert.ok(block);
+    const payload = block!.payload as {
+      router_status: string;
+      quota_observations: {
+        binding_id: string;
+        state: string;
+        detail?: string;
+      }[];
+    };
+    assert.equal(payload.router_status, "NO_QUOTA_ROUTABLE_BINDING");
+    assert.ok(Array.isArray(payload.quota_observations));
+    assert.ok(
+      payload.quota_observations.every(
+        (o) => o.state === "EXHAUSTED" && !("detail" in o && o.detail),
+      ),
+    );
+    const dispatchCount = (
+      handoff.store.db
+        .prepare(
+          `SELECT COUNT(*) AS c FROM dispatches WHERE target_role = 'builder'`,
+        )
+        .get() as { c: number }
+    ).c;
+    assert.equal(dispatchCount, 0);
+  } finally {
+    cleanup(dir);
+  }
+});

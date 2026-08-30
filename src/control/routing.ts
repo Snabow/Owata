@@ -9,10 +9,14 @@ import type { Capability } from "./protocol.js";
 import {
   filterEligibleBindings,
   observeBindingAvailability,
-  selectBinding,
+  observeBindingQuota,
+  selectBindingWithQuota,
   type AvailabilityObservation,
   type EligibilityRequest,
   type ProviderRegistry,
+  type QuotaObservation,
+  type QuotaProbeResult,
+  type QuotaState,
   type RoutableRole,
 } from "../router/index.js";
 
@@ -20,24 +24,32 @@ export type AvailabilityProbeFn = () =>
   | { ok: boolean; authReady: boolean; detail?: string }
   | Promise<{ ok: boolean; authReady: boolean; detail?: string }>;
 
+/** Optional live quota probe (A-019). Missing → UNKNOWN (S8 fallback). */
+export type QuotaProbeFn = () =>
+  | QuotaProbeResult
+  | Promise<QuotaProbeResult>;
+
 export type RuntimeCatalogEntry =
   | {
       binding_id: string;
       role: "program_control";
       adapter: ProgramControlAdapter;
       probe: AvailabilityProbeFn;
+      quotaProbe?: QuotaProbeFn;
     }
   | {
       binding_id: string;
       role: "builder";
       adapter: BuilderAdapter;
       probe: AvailabilityProbeFn;
+      quotaProbe?: QuotaProbeFn;
     }
   | {
       binding_id: string;
       role: "reviewer";
       adapter: ReviewerAdapter;
       probe: AvailabilityProbeFn;
+      quotaProbe?: QuotaProbeFn;
     };
 
 export interface RoutingConfig {
@@ -45,21 +57,28 @@ export interface RoutingConfig {
   catalog: readonly RuntimeCatalogEntry[];
 }
 
-/** Router-native pre-dispatch block reasons (A-009; not FailureClass). */
+/** Router-native pre-dispatch block reasons (A-009 / A-020 / A-021; not FailureClass). */
 export type RoutingBlockReason =
   | "NO_ELIGIBLE_BINDING"
   | "NO_AVAILABLE_BINDING"
+  | "NO_QUOTA_ROUTABLE_BINDING"
   | "ROUTING_PROVENANCE_MISSING"
   | "ROUTING_CONFIG_INVALID"
   | "PINNED_BINDING_ABSENT"
   | "PINNED_BINDING_INELIGIBLE"
   | "PINNED_BINDING_NOT_IN_CATALOG"
   | "PINNED_BINDING_UNAVAILABLE"
+  | "PINNED_BINDING_QUOTA_EXHAUSTED"
   | "SELECTED_BINDING_NOT_IN_CATALOG";
 
 export interface DurableRoutingObservation {
   binding_id: string;
   state: AvailabilityObservation["state"];
+}
+
+export interface DurableQuotaRoutingObservation {
+  binding_id: string;
+  state: QuotaState;
 }
 
 export type RoutedBindingOutcome =
@@ -68,12 +87,15 @@ export type RoutedBindingOutcome =
       binding_id: string;
       entry: RuntimeCatalogEntry;
       observations: AvailabilityObservation[];
+      quota_observations: QuotaObservation[];
       pinned_binding_id: string | null;
+      quota_state?: "AVAILABLE" | "UNKNOWN";
     }
   | {
       status: "BLOCKED";
       reason: RoutingBlockReason;
       observations: AvailabilityObservation[];
+      quota_observations: QuotaObservation[];
       pinned_binding_id: string | null;
     };
 
@@ -143,6 +165,15 @@ export function sanitizeRoutingObservations(
   }));
 }
 
+export function sanitizeQuotaRoutingObservations(
+  observations: readonly QuotaObservation[],
+): DurableQuotaRoutingObservation[] {
+  return observations.map((o) => ({
+    binding_id: o.binding_id,
+    state: o.state,
+  }));
+}
+
 /**
  * Produce current availability observations for an S1 eligible set.
  * Catalog entry → observeBindingAvailability(probe); absent → UNKNOWN.
@@ -166,7 +197,28 @@ export async function observeEligibleBindings(
 }
 
 /**
- * Initial selection: S1 → observe → S3 selectBinding. No failover.
+ * Quota observations for availability-AVAILABLE candidates only (A-019/A-020).
+ * Missing quotaProbe → UNKNOWN. Never probes availability-unavailable bindings.
+ */
+export async function observeQuotaForAvailableBindings(
+  availableBindingIds: readonly string[],
+  catalog: ReadonlyMap<string, RuntimeCatalogEntry>,
+): Promise<QuotaObservation[]> {
+  const observations: QuotaObservation[] = [];
+  for (const bindingId of availableBindingIds) {
+    const entry = catalog.get(bindingId);
+    if (!entry?.quotaProbe) {
+      observations.push({ binding_id: bindingId, state: "UNKNOWN" });
+      continue;
+    }
+    observations.push(await observeBindingQuota(bindingId, entry.quotaProbe));
+  }
+  return observations;
+}
+
+/**
+ * Initial selection: S1 → availability → S8 selectBindingWithQuota (A-020).
+ * Pre-claim EXHAUSTED skip is routing selection, not failover.
  */
 export async function selectRoutedBinding(args: {
   registry: ProviderRegistry;
@@ -179,6 +231,7 @@ export async function selectRoutedBinding(args: {
       status: "BLOCKED",
       reason: "NO_ELIGIBLE_BINDING",
       observations: [],
+      quota_observations: [],
       pinned_binding_id: null,
     };
   }
@@ -187,12 +240,27 @@ export async function selectRoutedBinding(args: {
     eligibility.bindings,
     args.catalog,
   );
-  const selected = selectBinding(args.registry, args.request, observations);
+  const availableIds = observations
+    .filter((o) => o.state === "AVAILABLE")
+    .map((o) => o.binding_id);
+  const quotaObservations = await observeQuotaForAvailableBindings(
+    availableIds,
+    args.catalog,
+  );
+
+  const selected = selectBindingWithQuota(
+    args.registry,
+    args.request,
+    observations,
+    quotaObservations,
+  );
+
   if (selected.status === "NO_ELIGIBLE_BINDING") {
     return {
       status: "BLOCKED",
       reason: "NO_ELIGIBLE_BINDING",
       observations,
+      quota_observations: quotaObservations,
       pinned_binding_id: null,
     };
   }
@@ -201,6 +269,16 @@ export async function selectRoutedBinding(args: {
       status: "BLOCKED",
       reason: "NO_AVAILABLE_BINDING",
       observations,
+      quota_observations: quotaObservations,
+      pinned_binding_id: null,
+    };
+  }
+  if (selected.status === "NO_QUOTA_ROUTABLE_BINDING") {
+    return {
+      status: "BLOCKED",
+      reason: "NO_QUOTA_ROUTABLE_BINDING",
+      observations,
+      quota_observations: quotaObservations,
       pinned_binding_id: null,
     };
   }
@@ -211,6 +289,7 @@ export async function selectRoutedBinding(args: {
       status: "BLOCKED",
       reason: "SELECTED_BINDING_NOT_IN_CATALOG",
       observations,
+      quota_observations: quotaObservations,
       pinned_binding_id: null,
     };
   }
@@ -219,6 +298,7 @@ export async function selectRoutedBinding(args: {
       status: "BLOCKED",
       reason: "ROUTING_CONFIG_INVALID",
       observations,
+      quota_observations: quotaObservations,
       pinned_binding_id: null,
     };
   }
@@ -228,12 +308,15 @@ export async function selectRoutedBinding(args: {
     binding_id: selected.binding.binding_id,
     entry,
     observations,
+    quota_observations: quotaObservations,
     pinned_binding_id: null,
+    quota_state: selected.quota_state,
   };
 }
 
 /**
- * Same-request pin: must use exact prior binding_id; never select another.
+ * Same-request pin: exact prior binding_id; quota only on pinned binding (A-021).
+ * Never select another binding. EXHAUSTED → PINNED_BINDING_QUOTA_EXHAUSTED.
  */
 export async function resolvePinnedBinding(args: {
   registry: ProviderRegistry;
@@ -248,6 +331,7 @@ export async function resolvePinnedBinding(args: {
       status: "BLOCKED",
       reason: "PINNED_BINDING_ABSENT",
       observations: [{ binding_id: pinned, state: "UNKNOWN" }],
+      quota_observations: [],
       pinned_binding_id: pinned,
     };
   }
@@ -268,6 +352,7 @@ export async function resolvePinnedBinding(args: {
       status: "BLOCKED",
       reason: "PINNED_BINDING_INELIGIBLE",
       observations,
+      quota_observations: [],
       pinned_binding_id: pinned,
     };
   }
@@ -278,6 +363,7 @@ export async function resolvePinnedBinding(args: {
       status: "BLOCKED",
       reason: "PINNED_BINDING_NOT_IN_CATALOG",
       observations: [{ binding_id: pinned, state: "UNKNOWN" }],
+      quota_observations: [],
       pinned_binding_id: pinned,
     };
   }
@@ -286,6 +372,7 @@ export async function resolvePinnedBinding(args: {
       status: "BLOCKED",
       reason: "ROUTING_CONFIG_INVALID",
       observations: [{ binding_id: pinned, state: "UNKNOWN" }],
+      quota_observations: [],
       pinned_binding_id: pinned,
     };
   }
@@ -296,6 +383,21 @@ export async function resolvePinnedBinding(args: {
       status: "BLOCKED",
       reason: "PINNED_BINDING_UNAVAILABLE",
       observations: [obs],
+      quota_observations: [],
+      pinned_binding_id: pinned,
+    };
+  }
+
+  const quotaObs = entry.quotaProbe
+    ? await observeBindingQuota(pinned, entry.quotaProbe)
+    : ({ binding_id: pinned, state: "UNKNOWN" } satisfies QuotaObservation);
+
+  if (quotaObs.state === "EXHAUSTED") {
+    return {
+      status: "BLOCKED",
+      reason: "PINNED_BINDING_QUOTA_EXHAUSTED",
+      observations: [obs],
+      quota_observations: [quotaObs],
       pinned_binding_id: pinned,
     };
   }
@@ -305,7 +407,9 @@ export async function resolvePinnedBinding(args: {
     binding_id: pinned,
     entry,
     observations: [obs],
+    quota_observations: [quotaObs],
     pinned_binding_id: pinned,
+    quota_state: quotaObs.state === "AVAILABLE" ? "AVAILABLE" : "UNKNOWN",
   };
 }
 
