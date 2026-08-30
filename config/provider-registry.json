@@ -1,0 +1,41 @@
+{
+  "protocol": "owata.provider-registry/1",
+  "bindings": [
+    {
+      "binding_id": "codex-cli-program-control",
+      "role": "program_control",
+      "provider_id": "openai-codex",
+      "runtime_id": "codex-cli",
+      "capabilities": ["repository_read"],
+      "priority": 100,
+      "enabled": true
+    },
+    {
+      "binding_id": "cursor-cli",
+      "role": "builder",
+      "provider_id": "cursor",
+      "runtime_id": "cursor-cli",
+      "capabilities": [
+        "repository_read",
+        "repository_write",
+        "exact_checkout",
+        "command_execution"
+      ],
+      "priority": 100,
+      "enabled": true
+    },
+    {
+      "binding_id": "codex-cli",
+      "role": "reviewer",
+      "provider_id": "openai-codex",
+      "runtime_id": "codex-cli",
+      "capabilities": [
+        "repository_read",
+        "exact_checkout",
+        "command_execution"
+      ],
+      "priority": 100,
+      "enabled": true
+    }
+  ]
+}
