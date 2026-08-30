@@ -1,0 +1,13 @@
+{
+  "dispatch_id": "dsp_120",
+  "attempt_number": 1,
+  "binding_id": "codex-cli",
+  "binding_version": "1",
+  "runtime_version": "codex-cli 0.150.1",
+  "prompt_hash": "5a00bc0c90bafb585fa4ef6dd43bb549c82017249ee58d664a6fcd92d97ef16f",
+  "template_version": "reviewer-instruction-v1",
+  "target_sha": "93a5f2f946de12bb6a4a34dc5db9602be89872e6",
+  "workspace_path": "C:\\Users\\seq\\AppData\\Local\\Temp\\owata-b2-full-UOTBw3\\workspaces\\review__cyc_3__req_116__dsp_120__attempt-1",
+  "tree_hash_before": "cf6e9d3a3a3796baf5ddd393316be5ef52283d24",
+  "auth_ready": true
+}

@@ -1,0 +1,12 @@
+{
+  "dispatch_id": "dsp_40",
+  "attempt_number": 1,
+  "binding_id": "codex-cli-program-control",
+  "binding_version": "1",
+  "runtime_version": "codex-cli 0.150.1",
+  "prompt_hash": "9d7da28de2d409e4551db888de41b5e86b250bb2f3c28dbd872e69b84c8bf392",
+  "template_version": "program-control-instruction-v1",
+  "auth_ready": true,
+  "cycle_id": "cyc_3",
+  "request_id": "req_36"
+}

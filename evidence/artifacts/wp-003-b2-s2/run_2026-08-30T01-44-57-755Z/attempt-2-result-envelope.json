@@ -1,0 +1,16 @@
+{
+  "protocol": "owata.handoff/1",
+  "envelope_id": "env_dsp_111_attempt_1",
+  "kind": "builder_result",
+  "cycle_id": "cyc_3",
+  "request_id": "req_107",
+  "from_role": "builder",
+  "to_role": "program_control",
+  "created_at": "2026-08-30T10:54:00.000+09:00",
+  "body": {
+    "status": "CANDIDATE_READY",
+    "candidate_sha": "93a5f2f946de12bb6a4a34dc5db9602be89872e6",
+    "evidence_refs": [],
+    "notes": null
+  }
+}

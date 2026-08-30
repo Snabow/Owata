@@ -1,0 +1,27 @@
+{
+  "pc_decisions": [
+    "BUILD",
+    "REWORK",
+    "REWORK",
+    "REWORK",
+    "ACCEPT"
+  ],
+  "reviewer_verdicts": [
+    "REWORK",
+    "REWORK",
+    "REWORK",
+    "PASS"
+  ],
+  "candidate_shas": [
+    "f8d6bfbf18ff9a3ac6e7bcea50f29bfa86431c88",
+    "5b793d97b327fb096c42b1e12620ba9ef25b1c7a",
+    "22989707d582fa9f12a359c21518ea917f5d4f4d",
+    "93a5f2f946de12bb6a4a34dc5db9602be89872e6"
+  ],
+  "accepted_candidate_sha": "93a5f2f946de12bb6a4a34dc5db9602be89872e6",
+  "builder_invocations": 4,
+  "reviewer_invocations": 4,
+  "pc_invocations": 5,
+  "browser_relay_used": false,
+  "human_continuity_actions": 0
+}
