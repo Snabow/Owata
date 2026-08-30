@@ -710,9 +710,16 @@ export class Dispatcher {
       if (body.status === "CANDIDATE_READY" && body.candidate_sha) {
         const live = this.handoff.requireCycle(cycle.cycle_id);
         if (this.handoff.mayAutoDispatchReview(live)) {
+          // F02: REWORK → auto-review must carry exact authorized_finding_ids.
+          // BUILD → review remains [].
+          const authorizedFindingIds =
+            request.body.action === "REWORK"
+              ? [...request.body.authorized_finding_ids]
+              : [];
           this.persistReviewRequest(
             { ...live, latest_candidate_sha: body.candidate_sha },
             body.candidate_sha,
+            authorizedFindingIds,
           );
         } else {
           this.handoff.transition(cycle.cycle_id, "AWAITING_PC", {
@@ -912,7 +919,11 @@ export class Dispatcher {
     });
   }
 
-  private persistReviewRequest(cycle: CycleRecord, targetSha: string): CycleRecord {
+  private persistReviewRequest(
+    cycle: CycleRecord,
+    targetSha: string,
+    authorizedFindingIds: string[] = [],
+  ): CycleRecord {
     if (!this.handoff.mayAutoDispatchReview(cycle)) {
       throw new ControlError(
         "POLICY_PROVENANCE",
@@ -935,7 +946,7 @@ export class Dispatcher {
       expected_result_kind: "reviewer_result",
       stop_condition: "exact target_sha required; no Builder chat",
       authorized_by_decision_id: cycle.policy_authorized_by_decision_id,
-      authorized_finding_ids: [],
+      authorized_finding_ids: [...authorizedFindingIds],
       retry_of_request_id: null,
     };
     this.handoff.persistEnvelope({

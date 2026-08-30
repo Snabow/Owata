@@ -89,12 +89,25 @@ export class GatewayBuilderAdapter implements BuilderAdapter {
       );
     }
 
-    const baseSha = input.request.body.base_sha ?? input.cycle.base_sha;
-    if (!baseSha) {
-      throw new ControlError(
-        "BASE_SHA_REQUIRED",
-        "Builder request requires resolvable base_sha",
-      );
+    const action = input.request.body.action;
+    let checkoutSha: string;
+    if (action === "REWORK") {
+      const targetSha = input.request.body.target_sha;
+      if (!targetSha) {
+        throw new ControlError(
+          "TARGET_SHA_REQUIRED",
+          "REWORK Builder request requires exact target_sha (reviewed candidate)",
+        );
+      }
+      checkoutSha = targetSha;
+    } else {
+      checkoutSha = input.request.body.base_sha ?? input.cycle.base_sha ?? "";
+      if (!checkoutSha) {
+        throw new ControlError(
+          "BASE_SHA_REQUIRED",
+          "Builder request requires resolvable base_sha",
+        );
+      }
     }
 
     const dispatch = input.dispatch;
@@ -103,7 +116,7 @@ export class GatewayBuilderAdapter implements BuilderAdapter {
 
     const worktree = createAttemptWorktree({
       repoPath: this.opts.repoPath,
-      baseSha,
+      baseSha: checkoutSha,
       worktreesRoot: this.opts.worktreesRoot,
       cycleId: input.cycle.cycle_id,
       requestId: input.request.request_id!,
@@ -129,6 +142,8 @@ export class GatewayBuilderAdapter implements BuilderAdapter {
             prompt_hash: compiled.promptHash,
             template_version: compiled.templateVersion,
             worktree_path: worktree.worktreePath,
+            action,
+            checkout_sha: checkoutSha,
           },
           null,
           2,

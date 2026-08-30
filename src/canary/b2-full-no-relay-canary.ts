@@ -29,6 +29,8 @@ import {
   GatewayReviewerAdapter,
 } from "../reviewer/index.js";
 import { persistB2FullEvidence } from "./b2-full-evidence-export.js";
+import { B2FullCanaryInvocationBudget } from "./b2-full-invocation-budget.js";
+import { ControlError } from "../control/types.js";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -324,6 +326,24 @@ async function main(): Promise<number> {
     });
     await reviewerGateway.refreshProbe();
 
+    // F03: hard pre-spawn budgets (canary-only)
+    const budget = new B2FullCanaryInvocationBudget();
+    const pcDecide = pcGateway.decide.bind(pcGateway);
+    pcGateway.decide = async (input) => {
+      budget.consume("program_control");
+      return pcDecide(input);
+    };
+    const builderBuild = builderGateway.build.bind(builderGateway);
+    builderGateway.build = async (input) => {
+      budget.consume("builder");
+      return builderBuild(input);
+    };
+    const reviewerReview = reviewerGateway.review.bind(reviewerGateway);
+    reviewerGateway.review = async (input) => {
+      budget.consume("reviewer");
+      return reviewerReview(input);
+    };
+
     const dispatcher = new Dispatcher(
       handoff,
       {
@@ -343,10 +363,15 @@ async function main(): Promise<number> {
           const meta = JSON.parse(
             readFileSync(artifacts.metadataPath, "utf8"),
           ) as { worktree_path: string };
+          // REWORK candidates must descend from the reviewed target_sha.
+          const ancestryBase =
+            ctx.request.body.action === "REWORK"
+              ? ctx.request.body.target_sha
+              : (ctx.request.body.base_sha ?? ctx.cycle.base_sha);
           verifyCandidateGitReality({
             repoPath,
             worktreePath: meta.worktree_path,
-            baseSha: ctx.request.body.base_sha ?? ctx.cycle.base_sha,
+            baseSha: ancestryBase,
             candidateSha: ctx.candidate_sha,
           });
         },
@@ -354,7 +379,26 @@ async function main(): Promise<number> {
     );
 
     // Drive full cycle without Browser Relay
-    const final = await dispatcher.runUntilStable(cycle.cycle_id, 48);
+    let final;
+    let budgetExceeded = false;
+    let budgetDetail: string | null = null;
+    try {
+      final = await dispatcher.runUntilStable(cycle.cycle_id, 48);
+    } catch (err) {
+      if (
+        err instanceof ControlError &&
+        err.code === "CANARY_INVOCATION_BUDGET_EXCEEDED"
+      ) {
+        budgetExceeded = true;
+        budgetDetail = err.message;
+        final = {
+          cycle: handoff.requireCycle(cycle.cycle_id),
+          steps: [],
+        };
+      } else {
+        throw err;
+      }
+    }
 
     const envelopes = handoff.listEnvelopes(cycle.cycle_id);
     const pcDecisions = envelopes
@@ -375,18 +419,19 @@ async function main(): Promise<number> {
       candidateShas.length >= 2 &&
       new Set(candidateShas).size === candidateShas.length;
 
-    const status =
-      final.cycle.state === "ACCEPTED" &&
-      pcDecisions.length === 3 &&
-      pcDecisions[0] === "BUILD" &&
-      pcDecisions[1] === "REWORK" &&
-      pcDecisions[2] === "ACCEPT" &&
-      reviewerVerdicts.length === 2 &&
-      reviewerVerdicts[0] === "REWORK" &&
-      reviewerVerdicts[1] === "PASS" &&
-      candidateShas.length === 2 &&
-      candidatesDiffer &&
-      final.cycle.accepted_candidate_sha === candidateShas[1]
+    const status = budgetExceeded
+      ? "CANARY_INVOCATION_BUDGET_EXCEEDED"
+      : final.cycle.state === "ACCEPTED" &&
+          pcDecisions.length === 3 &&
+          pcDecisions[0] === "BUILD" &&
+          pcDecisions[1] === "REWORK" &&
+          pcDecisions[2] === "ACCEPT" &&
+          reviewerVerdicts.length === 2 &&
+          reviewerVerdicts[0] === "REWORK" &&
+          reviewerVerdicts[1] === "PASS" &&
+          candidateShas.length === 2 &&
+          candidatesDiffer &&
+          final.cycle.accepted_candidate_sha === candidateShas[1]
         ? "B2_S2_CANARY_PASS"
         : "FAIL";
 
@@ -403,9 +448,9 @@ async function main(): Promise<number> {
       acceptedCandidateSha: final.cycle.accepted_candidate_sha,
       pcDecisions,
       reviewerVerdicts,
-      builderInvocations: candidateShas.length,
-      reviewerInvocations: reviewerVerdicts.length,
-      pcInvocations: pcDecisions.length,
+      builderInvocations: budget.snapshot().builder,
+      reviewerInvocations: budget.snapshot().reviewer,
+      pcInvocations: budget.snapshot().program_control,
       humanContinuityActions: 0,
       browserRelayUsed: false,
       pcBindingId: pcBinding.bindingId,
@@ -433,6 +478,11 @@ async function main(): Promise<number> {
       candidates_differ: candidatesDiffer,
       human_continuity_actions: 0,
       browser_relay_used: false,
+      invocation_budget: budget.snapshot(),
+      budget_exceeded: budgetExceeded,
+      budget_detail: budgetDetail,
+      prior_diagnostic_run:
+        "evidence/artifacts/wp-003-b2-s2/run_2026-08-30T01-44-57-755Z",
       pc_binding: pcBinding.bindingId,
       builder_binding: builderBinding.bindingId,
       reviewer_binding: reviewerBinding.bindingId,
