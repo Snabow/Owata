@@ -1,0 +1,21 @@
+{
+  "pc_decisions": [
+    "BUILD",
+    "REWORK",
+    "ACCEPT"
+  ],
+  "reviewer_verdicts": [
+    "REWORK",
+    "PASS"
+  ],
+  "candidate_shas": [
+    "2b55aeea55c959131819d6d040cb782bd04dbfaa",
+    "c800068cb144c2c8eb824a9a6e405e7526702247"
+  ],
+  "accepted_candidate_sha": "c800068cb144c2c8eb824a9a6e405e7526702247",
+  "builder_invocations": 2,
+  "reviewer_invocations": 2,
+  "pc_invocations": 3,
+  "browser_relay_used": false,
+  "human_continuity_actions": 0
+}

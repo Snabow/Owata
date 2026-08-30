@@ -1,0 +1,10 @@
+{
+  "dispatch_id": "dsp_50",
+  "attempt_number": 1,
+  "model_id": "composer-2.5",
+  "prompt_hash": "705f32d30ca52d2694fa81746d979028f2e2525f4c0c90a780039eea88b4ad44",
+  "template_version": "builder-instruction-v1",
+  "worktree_path": "C:\\Users\\seq\\AppData\\Local\\Temp\\owata-b2-full-mMaGfo\\worktrees\\cyc_3__req_46__dsp_50__attempt-1",
+  "action": "REWORK",
+  "checkout_sha": "2b55aeea55c959131819d6d040cb782bd04dbfaa"
+}

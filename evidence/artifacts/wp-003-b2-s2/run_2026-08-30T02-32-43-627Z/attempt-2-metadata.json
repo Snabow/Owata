@@ -1,0 +1,13 @@
+{
+  "dispatch_id": "dsp_29",
+  "attempt_number": 1,
+  "binding_id": "codex-cli",
+  "binding_version": "1",
+  "runtime_version": "codex-cli 0.150.1",
+  "prompt_hash": "cff18032c9d7966afd2eed4d2bd382cab53c9fc33b89b486e456c205c6d22477",
+  "template_version": "reviewer-instruction-v1",
+  "target_sha": "2b55aeea55c959131819d6d040cb782bd04dbfaa",
+  "workspace_path": "C:\\Users\\seq\\AppData\\Local\\Temp\\owata-b2-full-mMaGfo\\workspaces\\review__cyc_3__req_25__dsp_29__attempt-1",
+  "tree_hash_before": "254f8a39cb3d663dfc3f696184bc4cf5b94c6638",
+  "auth_ready": true
+}

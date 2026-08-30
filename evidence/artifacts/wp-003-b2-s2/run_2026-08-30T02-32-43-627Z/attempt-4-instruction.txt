@@ -1,0 +1,15 @@
+# Builder Instruction
+
+Execute the canonical control request below. Do not paraphrase findings or invent scope.
+
+## Canonical Request
+{"cycle_id":"cyc_3","request_body":{"action":"REWORK","authoritative_references":["decisions/DEC-003-001-wp003-architecture.md","work-packages/WP-003-B2-S2"],"authorized_by_decision_id":"env_0d47160dd2624676affe39c5560bf804","authorized_finding_ids":["REV-003-B2-S2-001"],"base_sha":"701ed38c8f1a23b906401bd7919e39c41a26935a","expected_result_kind":"builder_result","required_capabilities":["command_execution","exact_checkout","repository_read","repository_write"],"retry_of_request_id":null,"stop_condition":"bounded fake adapter; no real provider","target_role":"builder","target_sha":"2b55aeea55c959131819d6d040cb782bd04dbfaa","work_package_ref":"WP-003-B2-S2"},"request_id":"req_46","resolved_authorization":{"decision":{"authorized_finding_ids":["REV-003-B2-S2-001"],"decision":"REWORK","envelope_id":"env_0d47160dd2624676affe39c5560bf804","rationale":"The latest Reviewer result is REWORK for the exact latest candidate 2b55aeea55c959131819d6d040cb782bd04dbfaa, with finding REV-003-B2-S2-001 requiring STATUS.md to satisfy the READY acceptance requirement.","rework_scope":"Resolve REV-003-B2-S2-001 by changing STATUS.md so the status satisfies ACCEPTANCE.md's STATUS=READY requirement."},"findings":[{"finding_id":"REV-003-B2-S2-001","severity":"major","summary":"STATUS.md contains STATUS=BROKEN, but ACCEPTANCE.md requires STATUS=READY."}]},"result_envelope_path":"C:\\Users\\seq\\AppData\\Local\\Temp\\owata-b2-full-mMaGfo\\state\\execution\\dsp_50\\result-envelope.json","template_version":"builder-instruction-v1"}
+
+## Resolved Authorization (durable envelopes only)
+{"decision":{"authorized_finding_ids":["REV-003-B2-S2-001"],"decision":"REWORK","envelope_id":"env_0d47160dd2624676affe39c5560bf804","rationale":"The latest Reviewer result is REWORK for the exact latest candidate 2b55aeea55c959131819d6d040cb782bd04dbfaa, with finding REV-003-B2-S2-001 requiring STATUS.md to satisfy the READY acceptance requirement.","rework_scope":"Resolve REV-003-B2-S2-001 by changing STATUS.md so the status satisfies ACCEPTANCE.md's STATUS=READY requirement."},"findings":[{"finding_id":"REV-003-B2-S2-001","severity":"major","summary":"STATUS.md contains STATUS=BROKEN, but ACCEPTANCE.md requires STATUS=READY."}]}
+
+## Runtime Obligations
+- Write a canonical builder_result envelope JSON to: C:\Users\seq\AppData\Local\Temp\owata-b2-full-mMaGfo\state\execution\dsp_50\result-envelope.json
+- Commit repository changes in the active worktree when producing CANDIDATE_READY.
+- Include resolvable candidate_sha (git rev-parse HEAD after commit) when status is CANDIDATE_READY.
+- If CANARY_TASK.md exists at the worktree root, execute that file verbatim as the bounded task; do not expand scope beyond it and the envelope obligation.
