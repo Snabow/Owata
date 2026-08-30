@@ -58,6 +58,8 @@ export interface DispatchRecord {
   result_envelope_id: string | null;
   failure_class: FailureClass | null;
   failure_detail: string | null;
+  /** Router registry binding_id; null when no Router attribution was supplied. */
+  binding_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -126,6 +128,7 @@ function mapDispatch(row: Record<string, unknown>): DispatchRecord {
       row.failure_class == null ? null : (String(row.failure_class) as FailureClass),
     failure_detail:
       row.failure_detail == null ? null : String(row.failure_detail),
+    binding_id: row.binding_id == null ? null : String(row.binding_id),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
   };
@@ -949,9 +952,21 @@ export class HandoffStore {
     targetRole: LogicalRole;
     owner: string;
     leaseMs: number;
+    /** Optional Router registry binding identity for this attempt. */
+    bindingId?: string | null;
   }): DispatchRecord {
     const ts = nowIso(() => this.store.now());
     const cycle = this.requireCycle(args.cycleId);
+    let bindingId: string | null = null;
+    if (args.bindingId !== undefined && args.bindingId !== null) {
+      if (typeof args.bindingId !== "string" || args.bindingId.length === 0) {
+        throw new ControlError(
+          "RESULT_INVALID",
+          "bindingId must be a non-empty string when provided",
+        );
+      }
+      bindingId = args.bindingId;
+    }
     if (this.acceptedDispatch(args.cycleId, args.requestId)) {
       throw new ControlError(
         "ALREADY_ACCEPTED",
@@ -996,8 +1011,8 @@ export class HandoffStore {
         `INSERT INTO dispatches (
            dispatch_id, cycle_id, request_id, attempt_number, fence_token, owner,
            target_role, state, lease_expires_at, result_envelope_id,
-           failure_class, failure_detail, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'CLAIMED', ?, NULL, NULL, NULL, ?, ?)`,
+           failure_class, failure_detail, binding_id, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'CLAIMED', ?, NULL, NULL, NULL, ?, ?, ?)`,
       )
       .run(
         dispatchId,
@@ -1008,6 +1023,7 @@ export class HandoffStore {
         args.owner,
         args.targetRole,
         expires,
+        bindingId,
         ts,
         ts,
       );
@@ -1041,6 +1057,7 @@ export class HandoffStore {
         attempt_number: attempt,
         owner: args.owner,
         fence_token: fence,
+        binding_id: bindingId,
       },
     });
     return this.getDispatch(dispatchId)!;

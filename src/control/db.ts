@@ -170,6 +170,12 @@ function requiredSchemaShape(
     );
   }
 
+  if (version >= 6) {
+    shape
+      .find((t) => t.table === "dispatches")!
+      .columns.push("binding_id");
+  }
+
   return shape;
 }
 
@@ -447,6 +453,10 @@ function migrate(db: DatabaseSync, stateDir: string): void {
     migrateToV5(db);
     version = getSchemaVersion(db);
   }
+  if (version === 5) {
+    migrateToV6(db);
+    version = getSchemaVersion(db);
+  }
 
   if (version !== SCHEMA_VERSION) {
     throw new Error(
@@ -454,11 +464,12 @@ function migrate(db: DatabaseSync, stateDir: string): void {
     );
   }
 
-  // Idempotent additive columns for already-migrated v5 databases.
+  // Idempotent additive columns for already-migrated current databases.
   if (version === SCHEMA_VERSION) {
     addColumnIfMissing(db, "cycles", "policy_authorized_by_decision_id", "TEXT");
     addColumnIfMissing(db, "cycles", "recovery_target_request_id", "TEXT");
     addColumnIfMissing(db, "cycles", "recovery_lineage_id", "TEXT");
+    addColumnIfMissing(db, "dispatches", "binding_id", "TEXT");
   }
 
   // Crash recovery / prior incomplete projection rebuild: converge from SQLite.
@@ -636,6 +647,16 @@ function migrateToV5(db: DatabaseSync): void {
   addColumnIfMissing(db, "cycles", "recovery_target_request_id", "TEXT");
   addColumnIfMissing(db, "cycles", "recovery_lineage_id", "TEXT");
   db.prepare("UPDATE schema_meta SET version = 5 WHERE id = 1").run();
+}
+
+/**
+ * Schema v6: durable per-dispatch Router binding_id attribution.
+ * Nullable: NULL means no Router attribution (pre-cutover / unspecified).
+ * Does not guess/backfill from adapter_id.
+ */
+function migrateToV6(db: DatabaseSync): void {
+  addColumnIfMissing(db, "dispatches", "binding_id", "TEXT");
+  db.prepare("UPDATE schema_meta SET version = 6 WHERE id = 1").run();
 }
 
 /**

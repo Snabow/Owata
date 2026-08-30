@@ -221,24 +221,24 @@ const pcBuildAwait: PcDecisionBody = pcDecision({
   install_policy: { on_builder_candidate: "AWAIT_PC" },
 });
 
-test("fresh database initializes at schema v5", async () => {
+test("fresh database initializes at schema v6", async () => {
   const dir = tempState();
   try {
     const store = ControlStore.open({ stateDir: dir });
-    assert.equal(store.schemaVersion(), 5);
-    assert.equal(SCHEMA_VERSION, 5);
+    assert.equal(store.schemaVersion(), SCHEMA_VERSION);
+    assert.equal(SCHEMA_VERSION, 6);
     store.close();
   } finally {
     cleanup(dir);
   }
 });
 
-test("real v4 state migrates to v5 without losing rows", async () => {
+test("real v4 state migrates to v6 without losing rows", async () => {
   const dir = tempState();
   try {
     createExactV4Database(dir);
     const store = ControlStore.open({ stateDir: dir });
-    assert.equal(store.schemaVersion(), 5);
+    assert.equal(store.schemaVersion(), SCHEMA_VERSION);
     assert.equal(store.getProject("prj_v4")?.name, "v4");
     assert.equal(store.getWork("wrk_v4")?.title, "v4-work");
     assert.equal(store.getWork("wrk_v4")?.task_type, "sum_two");
@@ -250,7 +250,7 @@ test("real v4 state migrates to v5 without losing rows", async () => {
     assert.equal(jsonl[0].event_id, "evt_v4");
     store.close();
     const again = ControlStore.open({ stateDir: dir });
-    assert.equal(again.schemaVersion(), 5);
+    assert.equal(again.schemaVersion(), SCHEMA_VERSION);
     assert.equal(again.getWork("wrk_v4")?.title, "v4-work");
     again.close();
   } finally {

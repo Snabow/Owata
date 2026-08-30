@@ -266,6 +266,7 @@ function findLatestDispatch(
         : (String(row.failure_class) as DispatchRecord["failure_class"]),
     failure_detail:
       row.failure_detail == null ? null : String(row.failure_detail),
+    binding_id: row.binding_id == null ? null : String(row.binding_id),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
   };
