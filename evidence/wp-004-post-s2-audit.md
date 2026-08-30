@@ -222,4 +222,3 @@ Given a validated `ProviderRegistry`, an `EligibilityRequest` `{ role, requiredC
 | SQLITE_REQUIRED_FOR_NEXT_SLICE | NO |
 | RECOMMENDED_NEXT_SLICE | WP-004-S3 窶・Deterministic binding selection from S1竏ｩS2 (API-only; no active cutover) |
 | AMBIGUOUS_ITEMS | A-004;A-005;A-006;A-007;A-008 |
-
