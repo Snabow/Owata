@@ -1068,7 +1068,11 @@ test("canary wiring references current registry binding ids", () => {
   assert.match(canarySrc, /loadProviderRegistry/);
   assert.match(canarySrc, /defaultProviderRegistryPath/);
   assert.match(canarySrc, /routing:\s*\{/);
-  assert.match(canarySrc, /costConstraint/);
+  // Legacy canary intentionally omits costConstraint (compile-time optional;
+  // active routed runtime still fail-closed). Must not invent monetary values.
+  assert.doesNotMatch(canarySrc, /costConstraint/);
+  assert.doesNotMatch(canarySrc, /999999/);
+  assert.doesNotMatch(canarySrc, /amount_decimal:\s*"0"/);
   assert.match(canarySrc, /pcBinding\.bindingId/);
   assert.match(canarySrc, /builderBinding\.bindingId/);
   assert.match(canarySrc, /reviewerBinding\.bindingId/);

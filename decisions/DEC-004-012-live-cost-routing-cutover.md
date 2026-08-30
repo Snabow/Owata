@@ -4,7 +4,7 @@
 **Status:** ACCEPTED
 **Date:** 2026-08-31
 **Work Package:** WP-004-S11
-**Authority:** Program Control (OWATA-REQ-0129)
+**Authority:** Program Control (OWATA-REQ-0130)
 **Related:** `decisions/DEC-004-010-live-quota-routing-cutover.md`, `decisions/DEC-004-011-cost-routing-policy.md`, `decisions/DEC-004-006-human-routine-approval-zero.md`
 
 Builder MUST NOT expand or change this Decision beyond recording the Program Control adjudications below.
@@ -19,14 +19,19 @@ S10 defined pure `selectBindingWithQuotaAndCost` without live Dispatcher wiring.
 
 ## Program Control adjudications
 
-### A-026 — Mandatory live costConstraint
+### A-026 — Live costConstraint (runtime mandatory)
 
-Active `RoutingConfig` MUST include `costConstraint: CostRoutingConstraint`.
+`RoutingConfig.costConstraint` may be optional at the static TypeScript shape for backward source compatibility with legacy callers.
+
+Any **active** routed Dispatcher MUST validate at runtime:
 
 - Missing / malformed → fail closed `ROUTING_CONFIG_INVALID` (`ControlError`)
 - No default ceiling
+- No quota-only fallback when constraint is absent
 - Reuses S10/S7 validation (`isValidCostEstimate` / cost-policy assert)
 - Constraint is evaluation input only — not spend authorization; material ceiling changes remain Human Gate under DEC-004-006 / DEC-004-008
+
+The runtime contract (not TypeScript presence alone) defines A-026.
 
 ### A-027 — Optional live costProbe
 

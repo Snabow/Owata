@@ -70,8 +70,12 @@ export type RuntimeCatalogEntry =
 export interface RoutingConfig {
   registry: ProviderRegistry;
   catalog: readonly RuntimeCatalogEntry[];
-  /** Mandatory for active routed config (A-026). No default ceiling. */
-  costConstraint: CostRoutingConstraint;
+  /**
+   * Optional at the static TypeScript shape for legacy source compatibility.
+   * Active routed Dispatcher MUST validate at runtime (A-026): missing/malformed
+   * → ROUTING_CONFIG_INVALID. No default ceiling / quota-only fallback.
+   */
+  costConstraint?: CostRoutingConstraint;
 }
 
 /** Router-native pre-dispatch block reasons (A-009 / A-020 / A-021 / A-028 / A-029; not FailureClass). */
