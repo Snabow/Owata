@@ -9,6 +9,11 @@ export {
   type AvailabilityState,
   type BindingSelectionResult,
   type BindingSelectionStatus,
+  type CostAssessmentResult,
+  type CostEstimate,
+  type CostObservation,
+  type CostProbeResult,
+  type CostState,
   type EligibilityRequest,
   type EligibilityResult,
   type EligibilityStatus,
@@ -26,15 +31,20 @@ export {
   parseProviderRegistry,
   parseProviderRegistryJson,
 } from "./registry.js";
-export { filterEligibleBindings } from "./eligibility.js";
 export {
   normalizeAvailability,
   observeBindingAvailability,
   overlayAvailability,
 } from "./availability.js";
+export { filterEligibleBindings } from "./eligibility.js";
 export { selectBinding } from "./selection.js";
 export {
   assessQuota,
   normalizeQuota,
   observeBindingQuota,
 } from "./quota.js";
+export {
+  assessCost,
+  normalizeCostEstimate,
+  observeBindingCost,
+} from "./cost.js";

@@ -110,6 +110,39 @@ export interface QuotaAssessmentResult {
   observations: QuotaObservation[];
 }
 
+/**
+ * Provider-neutral next-invocation cost estimate.
+ * amount_decimal is a base-10 decimal string (no float arithmetic).
+ * currency_code is syntactic three uppercase ASCII letters only (no ISO table / conversion).
+ */
+export interface CostEstimate {
+  amount_decimal: string;
+  currency_code: string;
+}
+
+/** Explicit adapter/provider-owned cost probe. Absence or malformation → UNKNOWN. */
+export interface CostProbeResult {
+  estimate: CostEstimate;
+  detail?: string;
+}
+
+export type CostState = "ESTIMATE_AVAILABLE" | "UNKNOWN";
+
+export interface CostObservation {
+  binding_id: string;
+  state: CostState;
+  estimate?: CostEstimate;
+  detail?: string;
+}
+
+/** Deterministic partition of input bindings by cost observation (input order preserved). */
+export interface CostAssessmentResult {
+  estimated: ProviderBinding[];
+  unknown: ProviderBinding[];
+  /** Per input-binding observation used for this assessment (ephemeral). */
+  observations: CostObservation[];
+}
+
 export class RouterError extends Error {
   readonly code: string;
 
