@@ -1,9 +1,31 @@
 # WP-003 Slice 2 — Real Builder Binding + B1 Canary (evidence)
 
-**Request lineage:** OWATA-REQ-0039 → OWATA-REQ-0040 → OWATA-REQ-0041 (REWORK) → OWATA-REQ-0042 (REWORK)
+**Request lineage:** OWATA-REQ-0039 → OWATA-REQ-0040 → OWATA-REQ-0041 → OWATA-REQ-0042 → OWATA-REQ-0043 → OWATA-REQ-0044 → OWATA-REQ-0045 → OWATA-REQ-0046
 **Branch:** `wp-003/slice-2-real-builder`
 **Authoritative base:** `f3f77b0c1d6a11f1fcd0aac3adffd3fa3a6809ff`
 **Decision:** `decisions/DEC-003-003-real-builder-binding-b1-canary.md`
+
+## Program Control adjudication (OWATA-REQ-0046)
+
+- **B1_GRADUATED: YES**
+- **WP003_DONE: NO**
+- SOURCE_IMPLEMENTATION_SHA: `a10ba5398a96ca779850c61e002e28a236ba17be`
+- REVIEW_TARGET: `9e59a0269172f3bd40bfd4ed307954426bc6edd2`
+- CANARY_CANDIDATE_SHA: `c540306fa48da5df55f8ee920cf84c5612bbf335`
+- PRODUCT_FINDINGS_OPEN: 0
+
+### Review lineage
+
+| Request | Disposition | Note |
+|---------|-------------|------|
+| OWATA-REQ-0041 | REWORK | F01–F06 accepted |
+| OWATA-REQ-0042 | PASS | F01–F06 resolved; real canary PASS |
+| OWATA-REQ-0043 | REWORK | only F07 remained |
+| OWATA-REQ-0044 | PASS | evidence integrity fix (no canary rerun) |
+| OWATA-REQ-0045 | BLOCK | INFRA ONLY (Codex read-only); F07_BYTE_IDENTITY RESOLVED |
+| OWATA-REQ-0046 | CANONICALIZE | Program Control records B1_GRADUATED=YES |
+
+Rationale (Program Control): source implementation reviewed at `a10ba539…`; F01/F02/F04/F05/F06 RESOLVED; session replacement canary PASS; F07 independently closed; no product finding remains; no source changes after `a10ba539…`.
 
 ## Provider policy qualification (REQ-0039)
 
@@ -41,8 +63,8 @@
 | Git reality verification (mandatory non-fake) | PASS |
 | Cursor CLI | `2026.08.25-3e8eec8` / auth READY |
 | Real Builder canary (REQ-0042) | **PASS** |
-| B1_CANARY_CANDIDATE | **PASS** (candidate; not graduated) |
-| B1 GRADUATION | NOT YET (PC + Independent Review only) |
+| B1_CANARY_CANDIDATE | **PASS** |
+| B1 GRADUATION | **YES** (Program Control OWATA-REQ-0046) |
 | WP-003 DONE | NO |
 
 ## Durable canary evidence (REQ-0042)
@@ -64,15 +86,15 @@ readme: STATUS=READY
 model_id: composer-2.5
 human_continuity_actions: 0
 resume/continue: not used
-manifest_content_sha256: 79ce78e77d4a4aa6dd43c2abb2907627e203656c53b4855b251edac0bffcb866
+manifest_content_sha256: 898f6b61f28e6fed8cbb7db5f22fd8d6eb51f75191a6a88db5a607ab3815fb2d
 ```
 
-Artifact hashes (from manifest):
+Artifact hashes (from current retained manifest after F07):
 
 - durable-state.json: `6d6a76b257c597f7e88a632432b37cec8f7b7a0adab4cc7b40a24e2aee162c0a`
 - attempt1-instruction.txt: `577fd47ea74f681629fd146640f3a712ba5105b779dd509410adea9381ba54bb`
 - attempt2-instruction.txt: `eafa29b1961fd5b54b05992d4ea52808275b9c552a8510953c58a3aaf3ddfb35`
-- attempt2-result-envelope.json: `41818124ba4077f1b3216ddbe8b112ad81da2f33ca3e70ee4f29abfcaf31df72`
+- attempt2-result-envelope.json: `be7637418a4125fe89eb195fb62d8339b45ebec49e56529b26ebed619986b4a8`
 - task-repo.bundle: `234ad515ef7b778e59bb824cf495c46ecf740d0bc69fb7cd53adc6e03dc01690`
 - invocation-flags.json: `49cb8af5cfd646f22e1b4a37c63c5b2c4f92226621a90296d7df804c0b3cffca`
 
@@ -92,9 +114,9 @@ git diff --check (working tree / post-fix tip) → PASS
 
 - INITIAL_IMPLEMENTATION_SHA: `9582212d3e840b8cbd4cb5ce778b5d9a651c3588`
 - PRE_REWORK_REVIEW_TARGET: `4c8e792eb34912f4637af855d2f2f5b217f8489f`
-- REWORK_IMPLEMENTATION_SHA: `a10ba5398a96ca779850c61e002e28a236ba17be`
+- SOURCE_IMPLEMENTATION_SHA / REWORK_IMPLEMENTATION_SHA: `a10ba5398a96ca779850c61e002e28a236ba17be`
 - EVIDENCE_BUNDLE_SHA: `c1485f067888f8e2fca01db20194e1b383e7aea3`
-- REVIEW_TARGET: see RESULT `HEAD` (branch tip including this evidence identity note)
+- REVIEW_TARGET: `9e59a0269172f3bd40bfd4ed307954426bc6edd2`
 
 ## REQ-0044 evidence integrity (F07)
 
@@ -102,3 +124,11 @@ git diff --check (working tree / post-fix tip) → PASS
 - Fix: .gitattributes rule evidence/artifacts/wp-003-slice-2/** -text; canonicalize retained text artifacts to LF under -text; update attempt2-result-envelope.json manifest hash to LF blob SHA-256 be763741… (was CRLF 41818124… which tripped git diff --check).
 - Paid real canary was NOT rerun.
 - manifest_content_sha256 convention: SHA-256 of Node JSON.stringify(manifestWithoutSelfHash, null, 2) + newline.
+- Closed by OWATA-REQ-0045 (F07_BYTE_IDENTITY RESOLVED; Codex STATUS BLOCK was infrastructure-only).
+
+## Next phase (WP-003 remains OPEN)
+
+- Complete the full Program Control → Builder → Independent Reviewer → Program Control runtime loop
+- Eliminate Browser Relay / Human Clipboard dependency
+- Real ProgramControlAdapter and isolated real ReviewerAdapter remain future WP-003 work
+- Main merge of the reviewed tip requires a separate Human Gate (not part of OWATA-REQ-0046)
