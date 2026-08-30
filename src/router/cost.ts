@@ -25,11 +25,24 @@ export function isValidCostEstimate(value: unknown): value is CostEstimate {
 }
 
 function assertNormalizedObservation(obs: CostObservation): void {
-  if (obs.state === "UNKNOWN") {
+  const state = (obs as { state?: unknown }).state;
+  if (state !== "ESTIMATE_AVAILABLE" && state !== "UNKNOWN") {
+    throw new RouterError(
+      "COST_INVALID",
+      `invalid cost observation state for binding_id ${obs.binding_id}`,
+    );
+  }
+  if (state === "UNKNOWN") {
+    if ("estimate" in (obs as object)) {
+      throw new RouterError(
+        "COST_INVALID",
+        `UNKNOWN cost observation must not carry estimate for binding_id ${obs.binding_id}`,
+      );
+    }
     return;
   }
-  // ESTIMATE_AVAILABLE branch of the discriminated union
-  if (!isValidCostEstimate(obs.estimate)) {
+  // ESTIMATE_AVAILABLE
+  if (!isValidCostEstimate((obs as { estimate?: unknown }).estimate)) {
     throw new RouterError(
       "COST_INVALID",
       `ESTIMATE_AVAILABLE requires syntactically valid estimate for binding_id ${obs.binding_id}`,

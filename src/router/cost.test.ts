@@ -275,6 +275,78 @@ test("duplicate unrelated observations are ignored", () => {
   assert.equal(result.observations[0]?.binding_id, "b1");
 });
 
+test("relevant invalid state + valid estimate -> COST_INVALID", () => {
+  const b = binding({ binding_id: "b1" });
+  const bad = {
+    binding_id: "b1",
+    state: "AVAILABLE",
+    estimate: { amount_decimal: "1", currency_code: "USD" },
+  } as unknown as CostObservation;
+  assert.throws(
+    () => assessCost([b], [bad]),
+    (err: unknown) =>
+      err instanceof RouterError && err.code === "COST_INVALID",
+  );
+});
+
+test("relevant invalid state + no estimate -> COST_INVALID", () => {
+  const b = binding({ binding_id: "b1" });
+  const bad = {
+    binding_id: "b1",
+    state: "AVAILABLE",
+  } as unknown as CostObservation;
+  assert.throws(
+    () => assessCost([b], [bad]),
+    (err: unknown) =>
+      err instanceof RouterError && err.code === "COST_INVALID",
+  );
+});
+
+test("relevant UNKNOWN + estimate -> COST_INVALID", () => {
+  const b = binding({ binding_id: "b1" });
+  const withValid = {
+    binding_id: "b1",
+    state: "UNKNOWN",
+    estimate: { amount_decimal: "1", currency_code: "USD" },
+  } as unknown as CostObservation;
+  const withMalformed = {
+    binding_id: "b1",
+    state: "UNKNOWN",
+    estimate: { amount_decimal: "-1", currency_code: "USD" },
+  } as unknown as CostObservation;
+  assert.throws(
+    () => assessCost([b], [withValid]),
+    (err: unknown) =>
+      err instanceof RouterError && err.code === "COST_INVALID",
+  );
+  assert.throws(
+    () => assessCost([b], [withMalformed]),
+    (err: unknown) =>
+      err instanceof RouterError && err.code === "COST_INVALID",
+  );
+});
+
+test("unrelated invalid-state / UNKNOWN-with-estimate ignored", () => {
+  const b = binding({ binding_id: "b1" });
+  const result = assessCost(
+    [b],
+    [
+      {
+        binding_id: "ghost",
+        state: "AVAILABLE",
+        estimate: { amount_decimal: "1", currency_code: "USD" },
+      } as unknown as CostObservation,
+      {
+        binding_id: "ghost2",
+        state: "UNKNOWN",
+        estimate: { amount_decimal: "1", currency_code: "USD" },
+      } as unknown as CostObservation,
+    ],
+  );
+  assert.deepEqual(result.estimated, []);
+  assert.equal(result.unknown[0]?.binding_id, "b1");
+});
+
 test("ESTIMATE_AVAILABLE without estimate -> COST_INVALID", () => {
   const b = binding({ binding_id: "b1" });
   const bad = {
