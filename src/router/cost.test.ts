@@ -227,6 +227,52 @@ test("unrelated observation cannot inject binding", () => {
     result.unknown.map((x) => x.binding_id),
     ["b1"],
   );
+  assert.deepEqual(
+    result.observations.map((x) => x.binding_id),
+    ["b1"],
+  );
+});
+
+test("unrelated malformed ESTIMATE_AVAILABLE without estimate is ignored", () => {
+  const b = binding({ binding_id: "b1" });
+  const bad = {
+    binding_id: "ghost",
+    state: "ESTIMATE_AVAILABLE",
+  } as unknown as CostObservation;
+  const result = assessCost([b], [bad]);
+  assert.deepEqual(result.estimated, []);
+  assert.equal(result.unknown[0]?.binding_id, "b1");
+});
+
+test("unrelated malformed amount/currency is ignored", () => {
+  const b = binding({ binding_id: "b1" });
+  const badAmount = {
+    binding_id: "ghost",
+    state: "ESTIMATE_AVAILABLE",
+    estimate: { amount_decimal: "-1", currency_code: "USD" },
+  } as unknown as CostObservation;
+  const badCurrency = {
+    binding_id: "ghost2",
+    state: "ESTIMATE_AVAILABLE",
+    estimate: { amount_decimal: "1", currency_code: "usd" },
+  } as unknown as CostObservation;
+  const result = assessCost([b], [badAmount, badCurrency]);
+  assert.deepEqual(result.estimated, []);
+  assert.equal(result.unknown[0]?.binding_id, "b1");
+});
+
+test("duplicate unrelated observations are ignored", () => {
+  const b = binding({ binding_id: "b1" });
+  const ghost: CostObservation = {
+    binding_id: "ghost",
+    state: "ESTIMATE_AVAILABLE",
+    estimate: { amount_decimal: "1", currency_code: "USD" },
+  };
+  const result = assessCost([b], [ghost, { ...ghost }]);
+  assert.deepEqual(result.estimated, []);
+  assert.equal(result.unknown[0]?.binding_id, "b1");
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.observations[0]?.binding_id, "b1");
 });
 
 test("ESTIMATE_AVAILABLE without estimate -> COST_INVALID", () => {

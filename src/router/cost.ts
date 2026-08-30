@@ -94,11 +94,18 @@ export async function observeBindingCost(
   }
 }
 
-function indexObservations(
+function indexRelevantObservations(
+  bindings: readonly ProviderBinding[],
   observations: readonly CostObservation[],
 ): Map<string, CostObservation> {
+  const owned = new Set(bindings.map((b) => b.binding_id));
   const byId = new Map<string, CostObservation>();
   for (const obs of observations) {
+    // Unrelated observations are outside assessment ownership: ignore completely
+    // (no injection, no COST_INVALID for malformation/duplication).
+    if (!owned.has(obs.binding_id)) {
+      continue;
+    }
     assertNormalizedObservation(obs);
     if (byId.has(obs.binding_id)) {
       throw new RouterError(
@@ -122,15 +129,15 @@ function observationFor(
  * Partition bindings by cost observation.
  * Preserves input binding order in each partition.
  * Missing observation is UNKNOWN.
- * Duplicate / contradictory normalized observations fail closed (COST_INVALID).
- * Observations for binding_ids absent from `bindings` are ignored (cannot inject).
+ * Unrelated observations (binding_id not in input bindings) are ignored completely.
+ * Duplicate / contradictory relevant normalized observations fail closed (COST_INVALID).
  * Partitions are descriptive only — no ranking, conversion, or routing.
  */
 export function assessCost(
   bindings: readonly ProviderBinding[],
   observations: readonly CostObservation[],
 ): CostAssessmentResult {
-  const byId = indexObservations(observations);
+  const byId = indexRelevantObservations(bindings, observations);
 
   const resolved: CostObservation[] = [];
   const estimated: ProviderBinding[] = [];

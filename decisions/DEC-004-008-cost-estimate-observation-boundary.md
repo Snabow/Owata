@@ -4,7 +4,7 @@
 **Status:** ACCEPTED
 **Date:** 2026-08-30
 **Work Package:** WP-004-S7
-**Authority:** Program Control (OWATA-REQ-0102; invariant repair OWATA-REQ-0103)
+**Authority:** Program Control (OWATA-REQ-0102; invariant repair OWATA-REQ-0103; unrelated-observation ownership OWATA-REQ-0104)
 **Related:** `decisions/DEC-004-002-availability-boundary.md`, `decisions/DEC-004-007-quota-observation-boundary.md`, `decisions/DEC-004-006-human-routine-approval-zero.md`
 
 Builder MUST NOT expand or change this Decision beyond recording the Program Control adjudications below.
@@ -59,8 +59,9 @@ Rules:
 Normalized `CostObservation` invariant (distinct from raw probe normalization):
 
 - `ESTIMATE_AVAILABLE` → syntactically valid `estimate` required
-- Contradictory/malformed normalized observations fail closed with `COST_INVALID`
+- Contradictory/malformed **relevant** normalized observations fail closed with `COST_INVALID`
 - Raw malformed probe payload: `normalizeCostEstimate` → `UNKNOWN`
+- “Ignored” for unrelated observations means they are outside the assessment ownership set and therefore are not normalized-observation contract errors for this assessment (malformed/duplicate unrelated observations do not throw)
 
 These are intentionally distinct boundaries.
 
