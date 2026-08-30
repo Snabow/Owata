@@ -1,4 +1,4 @@
-# WP-003-STATUS — Durable-state-backed `owata status`
+﻿# WP-003-STATUS 窶・Durable-state-backed `owata status`
 
 **Work Package:** WP-003-STATUS
 **Requests:** OWATA-REQ-0062 (implement), OWATA-REQ-0064 (F001 fail-closed repair)
@@ -57,8 +57,9 @@ file, preflight verifies read-only:
 - core tables recognizable for that version
 
 Malformed cases (zero-byte, random bytes, non-OWATA SQLite, missing meta row,
-unsupported version, unknown persisted `cycles.state`) → exit 1, no PRESENT,
-no Genesis stub, no `events.jsonl` / status-created repair artifacts.
+unsupported version, unknown persisted `cycles.state`, tables present but missing
+version-required columns) 竊・exit 1, no PRESENT, no Genesis stub, no `events.jsonl`
+/ status-created repair artifacts, no control.sqlite mutation.
 
 Recognized historical OWATA DBs may still use normal migration.
 
@@ -81,7 +82,7 @@ Most recently updated cycle: `updated_at DESC`, then `cycle_id DESC`.
 
 ## Validation
 
-- `npm test` / `npm run build` — PASS (see RESULT)
+- `npm test` / `npm run build` 窶・PASS (see RESULT)
 - Isolated `OWATA_STATE_DIR` CLI proofs for ABSENT, PRESENT, and corrupt fail-closed
 - No external model invocations
 
@@ -99,3 +100,11 @@ Most recently updated cycle: `updated_at DESC`, then `cycle_id DESC`.
 - **AUTHORIZED_FINDING:** OWATA-REQ-0063-F001
 - **NEW_IMPLEMENTATION_SHA:** `49971f307208990ef1cb8d9c2a3a5569e95ec892`
 - **NEW_IMPLEMENTATION_TREE_SHA:** `fea27e86ec2c3dd493fdc15fe6681805a5daa8ad`
+
+### OWATA-REQ-0066
+
+- **BASE:** `d6581992d5b84558a136e21d6b628dd874ed3109`
+- **AUTHORIZED_FINDING:** OWATA-REQ-0065-F001
+- Strengthens recognition with version-aware required-column checks via `PRAGMA table_info` before `ControlStore.open`.
+- - **NEW_IMPLEMENTATION_SHA:** `22ab131d1099954e4f4ae8b03a5692719606bb8f`
+- **NEW_IMPLEMENTATION_TREE_SHA:** `286ad28739c26da830d9873205df1e3dad9666f7`
