@@ -2397,6 +2397,81 @@ test("S12: escalated when cost ceiling excludes baseline; later within ceiling",
   }
 });
 
+test("S12: escalated when baseline cost UNKNOWN; later within ceiling", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const catalog = catalogByBindingId([
+    {
+      binding_id: "builder-a",
+      role: "builder",
+      adapter: builderA,
+      probe: available(),
+      // missing costProbe -> UNKNOWN (A-027)
+      quotaProbe: quotaAvailable(),
+    },
+    {
+      binding_id: "builder-b",
+      role: "builder",
+      adapter: builderB,
+      probe: available(),
+      costProbe: costWithin("3"),
+      quotaProbe: quotaAvailable(),
+    },
+  ]);
+  const frozenConstraint = { ...TEST_COST_CONSTRAINT };
+  const outcome = await selectRoutedBinding({
+    registry,
+    catalog,
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: frozenConstraint,
+  });
+  assert.equal(outcome.status, "SELECTED");
+  if (outcome.status === "SELECTED") {
+    assert.equal(outcome.baseline_binding_id, "builder-a");
+    assert.equal(outcome.selected_binding_id, "builder-b");
+    assert.equal(outcome.automatic_escalation, "ESCALATED");
+    assert.deepEqual(frozenConstraint, TEST_COST_CONSTRAINT);
+  }
+});
+
+test("S12: escalated when baseline currency mismatch; later within ceiling", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const catalog = catalogByBindingId([
+    {
+      binding_id: "builder-a",
+      role: "builder",
+      adapter: builderA,
+      probe: available(),
+      costProbe: costMismatch(),
+      quotaProbe: quotaAvailable(),
+    },
+    {
+      binding_id: "builder-b",
+      role: "builder",
+      adapter: builderB,
+      probe: available(),
+      costProbe: costWithin("4"),
+      quotaProbe: quotaAvailable(),
+    },
+  ]);
+  const outcome = await selectRoutedBinding({
+    registry,
+    catalog,
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
+  });
+  assert.equal(outcome.status, "SELECTED");
+  if (outcome.status === "SELECTED") {
+    assert.equal(outcome.baseline_binding_id, "builder-a");
+    assert.equal(outcome.selected_binding_id, "builder-b");
+    assert.equal(outcome.automatic_escalation, "ESCALATED");
+    assert.equal(outcome.estimate.currency_code, "USD");
+  }
+});
+
 test("S12: routing block does not fabricate escalation evidence", async () => {
   const registry = multiBuilderRegistry();
   const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
