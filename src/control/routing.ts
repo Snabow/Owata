@@ -117,6 +117,21 @@ export interface DurableCostConstraintSnapshot {
   };
 }
 
+/**
+ * A-034: PRE-ATTRIBUTION escalation evidence state.
+ * PRIMARY = selected equals S1 first eligible; ESCALATED = later permitted candidate.
+ * Not a quality tier. Not failover.
+ */
+export type AutomaticEscalationState = "PRIMARY" | "ESCALATED";
+
+/** Compare S1 baseline to live-selected binding (A-031 / A-034). */
+export function automaticEscalationState(
+  baselineBindingId: string,
+  selectedBindingId: string,
+): AutomaticEscalationState {
+  return selectedBindingId === baselineBindingId ? "PRIMARY" : "ESCALATED";
+}
+
 export type RoutedBindingOutcome =
   | {
       status: "SELECTED";
@@ -126,6 +141,12 @@ export type RoutedBindingOutcome =
       quota_observations: QuotaObservation[];
       cost_observations: CostObservation[];
       pinned_binding_id: string | null;
+      /** Exact first S1-eligible binding for this request (A-031 baseline). */
+      baseline_binding_id: string;
+      /** Same as binding_id; explicit for escalation evidence (A-034). */
+      selected_binding_id: string;
+      /** PRIMARY when selected == baseline; ESCALATED when later candidate (A-034). */
+      automatic_escalation: AutomaticEscalationState;
       quota_state?: "AVAILABLE" | "UNKNOWN";
       cost_state: "ESTIMATE_AVAILABLE";
       estimate: CostEstimate;
@@ -335,6 +356,7 @@ export async function observeCostForQuotaRoutableBindings(
 /**
  * Initial selection: S1 → availability → quota → cost → S10 selectBindingWithQuotaAndCost (A-028).
  * Pre-claim EXHAUSTED / non-verifiable cost skip is routing selection, not failover.
+ * A-031: baseline = first S1 eligible; ESCALATED only when live winner is a later permitted binding.
  */
 export async function selectRoutedBinding(args: {
   registry: ProviderRegistry;
@@ -355,6 +377,8 @@ export async function selectRoutedBinding(args: {
       pinned_binding_id: null,
     };
   }
+
+  const baselineBindingId = eligibility.bindings[0]!.binding_id;
 
   const observations = await observeEligibleBindings(
     eligibility.bindings,
@@ -444,14 +468,21 @@ export async function selectRoutedBinding(args: {
     };
   }
 
+  const selectedBindingId = selected.binding.binding_id;
   return {
     status: "SELECTED",
-    binding_id: selected.binding.binding_id,
+    binding_id: selectedBindingId,
     entry,
     observations,
     quota_observations: quotaObservations,
     cost_observations: costObservations,
     pinned_binding_id: null,
+    baseline_binding_id: baselineBindingId,
+    selected_binding_id: selectedBindingId,
+    automatic_escalation: automaticEscalationState(
+      baselineBindingId,
+      selectedBindingId,
+    ),
     quota_state: selected.quota_state,
     cost_state: "ESTIMATE_AVAILABLE",
     estimate: selected.estimate,
@@ -586,6 +617,7 @@ export async function resolvePinnedBinding(args: {
     };
   }
 
+  // A-033: pinned path never escalates; evidence stays PRIMARY on the pin.
   return {
     status: "SELECTED",
     binding_id: pinned,
@@ -594,6 +626,9 @@ export async function resolvePinnedBinding(args: {
     quota_observations: [quotaObs],
     cost_observations: [costObs],
     pinned_binding_id: pinned,
+    baseline_binding_id: pinned,
+    selected_binding_id: pinned,
+    automatic_escalation: "PRIMARY",
     quota_state: quotaObs.state === "AVAILABLE" ? "AVAILABLE" : "UNKNOWN",
     cost_state: "ESTIMATE_AVAILABLE",
     estimate: {

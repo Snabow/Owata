@@ -38,6 +38,7 @@ import {
   selectRoutedBinding,
   validateRuntimeCatalog,
   type RoutingConfig,
+  type RoutedBindingOutcome,
   type RuntimeCatalogEntry,
 } from "./routing.js";
 import type {
@@ -388,7 +389,13 @@ export class Dispatcher {
     existing: DispatchRecord | undefined,
     leaseValid: boolean,
   ): Promise<
-    | { ok: true; entry: RuntimeCatalogEntry; bindingId: string }
+    | {
+        ok: true;
+        entry: RuntimeCatalogEntry;
+        bindingId: string;
+        /** Present only for unattributed initial selection (A-031 / durable evidence). */
+        initialSelection?: Extract<RoutedBindingOutcome, { status: "SELECTED" }>;
+      }
     | { ok: false; step: StepResult }
   > {
     const { registry, catalog, costConstraint } = this.ensureRoutingReady();
@@ -399,6 +406,7 @@ export class Dispatcher {
 
     // Live same-owner CLAIMED lease (A-030): reuse attributed binding;
     // NO availability/quota/cost reprobe; NO constraint reevaluation.
+    // A-033: CLAIMED lease → NO escalation.
     if (leaseValid && existing) {
       if (existing.binding_id == null) {
         return {
@@ -435,6 +443,7 @@ export class Dispatcher {
     }
 
     if (existing) {
+      // A-033: after attribution / pin → NO alternate / NO escalation.
       if (existing.binding_id == null) {
         return {
           ok: false,
@@ -486,6 +495,7 @@ export class Dispatcher {
       costConstraint,
     });
     if (selected.status === "BLOCKED") {
+      // Routing blocks unchanged; do not fabricate escalation (A-034 / Other).
       return {
         ok: false,
         step: this.enterRoutingBlock({
@@ -505,6 +515,7 @@ export class Dispatcher {
       ok: true,
       entry: selected.entry,
       bindingId: selected.binding_id,
+      initialSelection: selected,
     };
   }
 
@@ -540,6 +551,9 @@ export class Dispatcher {
 
     let adapter: RoleAdapter;
     let bindingId: string | null = null;
+    let initialSelection:
+      | Extract<RoutedBindingOutcome, { status: "SELECTED" }>
+      | undefined;
 
     if (this.options.routing) {
       const resolved = await this.resolveRoutedAdapter(
@@ -554,6 +568,7 @@ export class Dispatcher {
       }
       adapter = resolved.entry.adapter;
       bindingId = resolved.bindingId;
+      initialSelection = resolved.initialSelection;
     } else {
       adapter = this.adapterFor(role);
     }
@@ -581,7 +596,7 @@ export class Dispatcher {
     const required = request.body.required_capabilities;
     const pre = adapter.preflight(required);
     if (!pre.ok) {
-      // Preflight contradiction after SELECTED: fail closed; do not reselect.
+      // Preflight contradiction after SELECTED: fail closed; do not reselect (A-033).
       this.handoff.recordCapabilityBlock({
         cycleId: cycle.cycle_id,
         requestId: request.request_id!,
@@ -595,6 +610,7 @@ export class Dispatcher {
     }
 
     let dispatch: DispatchRecord;
+    const claimedNew = !(leaseValid && existing);
     try {
       dispatch =
         leaseValid && existing
@@ -610,6 +626,7 @@ export class Dispatcher {
                 : {}),
             });
     } catch (err) {
+      // Claim failed → no cycle.routing_selected (A-034 durable success only).
       if (err instanceof ControlError && err.code === "RETRY_BUDGET") {
         return {
           cycle: this.handoff.requireCycle(cycle.cycle_id),
@@ -617,6 +634,44 @@ export class Dispatcher {
         };
       }
       throw err;
+    }
+
+    // Durable success evidence after NEW initial binding claim only (A-034).
+    // cycle.dispatch_claimed remains authoritative for attribution.
+    if (
+      claimedNew &&
+      this.options.routing &&
+      initialSelection &&
+      bindingId != null
+    ) {
+      const { costConstraint } = this.ensureRoutingReady();
+      const ts = nowIso(() => this.handoff.store.now());
+      this.handoff.store.appendEvent("cycle.routing_selected", {
+        project_id: cycle.project_id,
+        work_id: null,
+        ts,
+        payload: {
+          cycle_id: cycle.cycle_id,
+          request_id: request.request_id!,
+          dispatch_id: dispatch.dispatch_id,
+          target_role: role,
+          binding_id: bindingId,
+          baseline_binding_id: initialSelection.baseline_binding_id,
+          automatic_escalation:
+            initialSelection.automatic_escalation === "ESCALATED",
+          required_capabilities: [...request.body.required_capabilities],
+          observations: sanitizeRoutingObservations(
+            initialSelection.observations,
+          ),
+          quota_observations: sanitizeQuotaRoutingObservations(
+            initialSelection.quota_observations,
+          ),
+          cost_observations: sanitizeCostRoutingObservations(
+            initialSelection.cost_observations,
+          ),
+          cost_constraint: sanitizeCostConstraintSnapshot(costConstraint),
+        },
+      });
     }
 
     const abort = new AbortController();

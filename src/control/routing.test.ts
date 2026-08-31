@@ -2242,3 +2242,661 @@ test("S11: valid CLAIMED lease reuses binding without cost reprobe", async () =>
     cleanup(dir);
   }
 });
+
+// --- WP-004-S12 Automatic Escalation (A-031..A-034) ---
+
+test("S12: primary when first S1 eligible wins live routing", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const catalog = catalogByBindingId([
+    {
+      binding_id: "builder-a",
+      role: "builder",
+      adapter: builderA,
+      probe: available(),
+      costProbe: costWithin(),
+      quotaProbe: quotaAvailable(),
+    },
+    {
+      binding_id: "builder-b",
+      role: "builder",
+      adapter: builderB,
+      probe: available(),
+      costProbe: costWithin(),
+      quotaProbe: quotaAvailable(),
+    },
+  ]);
+  const outcome = await selectRoutedBinding({
+    registry,
+    catalog,
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
+  });
+  assert.equal(outcome.status, "SELECTED");
+  if (outcome.status === "SELECTED") {
+    assert.equal(outcome.baseline_binding_id, "builder-a");
+    assert.equal(outcome.selected_binding_id, "builder-a");
+    assert.equal(outcome.binding_id, "builder-a");
+    assert.equal(outcome.automatic_escalation, "PRIMARY");
+    assert.doesNotMatch(
+      JSON.stringify(outcome),
+      /stronger|premium|better/i,
+    );
+  }
+});
+
+test("S12: escalated when availability skips S1 baseline to later eligible", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const catalog = catalogByBindingId([
+    {
+      binding_id: "builder-a",
+      role: "builder",
+      adapter: builderA,
+      probe: unavailable("agent"),
+      costProbe: costWithin(),
+      quotaProbe: quotaAvailable(),
+    },
+    {
+      binding_id: "builder-b",
+      role: "builder",
+      adapter: builderB,
+      probe: available(),
+      costProbe: costWithin(),
+      quotaProbe: quotaAvailable(),
+    },
+  ]);
+  const outcome = await selectRoutedBinding({
+    registry,
+    catalog,
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
+  });
+  assert.equal(outcome.status, "SELECTED");
+  if (outcome.status === "SELECTED") {
+    assert.equal(outcome.baseline_binding_id, "builder-a");
+    assert.equal(outcome.selected_binding_id, "builder-b");
+    assert.equal(outcome.binding_id, "builder-b");
+    assert.equal(outcome.automatic_escalation, "ESCALATED");
+  }
+});
+
+test("S12: escalated when quota exhausts baseline; later UNKNOWN/AVAILABLE wins", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const catalog = catalogByBindingId([
+    {
+      binding_id: "builder-a",
+      role: "builder",
+      adapter: builderA,
+      probe: available(),
+      costProbe: costWithin(),
+      quotaProbe: quotaExhausted(),
+    },
+    {
+      binding_id: "builder-b",
+      role: "builder",
+      adapter: builderB,
+      probe: available(),
+      costProbe: costWithin(),
+      quotaProbe: quotaAvailable(),
+    },
+  ]);
+  const outcome = await selectRoutedBinding({
+    registry,
+    catalog,
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
+  });
+  assert.equal(outcome.status, "SELECTED");
+  if (outcome.status === "SELECTED") {
+    assert.equal(outcome.baseline_binding_id, "builder-a");
+    assert.equal(outcome.selected_binding_id, "builder-b");
+    assert.equal(outcome.automatic_escalation, "ESCALATED");
+  }
+});
+
+test("S12: escalated when cost ceiling excludes baseline; later within ceiling", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const catalog = catalogByBindingId([
+    {
+      binding_id: "builder-a",
+      role: "builder",
+      adapter: builderA,
+      probe: available(),
+      costProbe: costOver(),
+      quotaProbe: quotaAvailable(),
+    },
+    {
+      binding_id: "builder-b",
+      role: "builder",
+      adapter: builderB,
+      probe: available(),
+      costProbe: costWithin("2"),
+      quotaProbe: quotaAvailable(),
+    },
+  ]);
+  const outcome = await selectRoutedBinding({
+    registry,
+    catalog,
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
+  });
+  assert.equal(outcome.status, "SELECTED");
+  if (outcome.status === "SELECTED") {
+    assert.equal(outcome.baseline_binding_id, "builder-a");
+    assert.equal(outcome.selected_binding_id, "builder-b");
+    assert.equal(outcome.automatic_escalation, "ESCALATED");
+    assert.equal(outcome.estimate.amount_decimal, "2");
+    assert.equal(outcome.estimate.currency_code, "USD");
+  }
+});
+
+test("S12: routing block does not fabricate escalation evidence", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const catalog = catalogByBindingId([
+    {
+      binding_id: "builder-a",
+      role: "builder",
+      adapter: builderA,
+      probe: available(),
+      costProbe: costOver(),
+      quotaProbe: quotaAvailable(),
+    },
+    {
+      binding_id: "builder-b",
+      role: "builder",
+      adapter: builderB,
+      probe: available(),
+      costProbe: costOver(),
+      quotaProbe: quotaAvailable(),
+    },
+  ]);
+  const outcome = await selectRoutedBinding({
+    registry,
+    catalog,
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
+  });
+  assert.equal(outcome.status, "BLOCKED");
+  if (outcome.status === "BLOCKED") {
+    assert.equal(outcome.reason, "NO_COST_VERIFIABLE_BINDING");
+    assert.equal(
+      "automatic_escalation" in outcome,
+      false,
+    );
+  }
+});
+
+test("S12: pin path never escalates to alternate", async () => {
+  const registry = multiBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const pinned = await resolvePinnedBinding({
+    registry,
+    catalog: catalogByBindingId([
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: unavailable("cred"),
+        costProbe: costWithin(),
+        quotaProbe: quotaAvailable(),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        costProbe: costWithin(),
+        quotaProbe: quotaAvailable(),
+      },
+    ]),
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    pinnedBindingId: "builder-a",
+    costConstraint: TEST_COST_CONSTRAINT,
+  });
+  assert.equal(pinned.status, "BLOCKED");
+  if (pinned.status === "BLOCKED") {
+    assert.equal(pinned.reason, "PINNED_BINDING_UNAVAILABLE");
+    assert.equal(pinned.pinned_binding_id, "builder-a");
+  }
+});
+
+test("S12: durable cycle.routing_selected after successful escalated claim", async () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock } = openHarness(dir);
+    const project = store.createProject("s12-escalated");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-004",
+      baseSha: "base",
+    });
+    const pc = new FakeProgramControlAdapter(
+      [
+        pcDecision({
+          decision: "BUILD",
+          authorized_finding_ids: ["f-keep"],
+          install_policy: null,
+        }),
+      ],
+      envClock,
+    );
+    const builderA = new FakeBuilderAdapter([], envClock);
+    const builderB = new FakeBuilderAdapter(
+      [{ status: "CANDIDATE_READY", candidate_sha: "sha-esc" }],
+      envClock,
+    );
+    const reviewer = new FakeReviewerAdapter([], envClock);
+    const registry = multiBuilderRegistry();
+    const catalog: RuntimeCatalogEntry[] = [
+      {
+        binding_id: "pc-main",
+        role: "program_control",
+        adapter: pc,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: unavailable("agent"),
+        costProbe: costWithin(),
+        quotaProbe: quotaAvailable(),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        costProbe: costWithin("3"),
+        quotaProbe: quotaAvailable(),
+      },
+      {
+        binding_id: "reviewer-main",
+        role: "reviewer",
+        adapter: reviewer,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+    ];
+    const dispatcher = new Dispatcher(
+      handoff,
+      { programControl: pc, builder: builderA, reviewer },
+      {
+        owner: "disp",
+        leaseMs: 60_000,
+        routing: { registry, catalog, costConstraint: TEST_COST_CONSTRAINT },
+      },
+    );
+    let last = await dispatcher.step(cycle.cycle_id);
+    while (
+      last.cycle.state !== "AWAITING_PC" &&
+      last.cycle.state !== "RECOVERY_REQUIRED" &&
+      last.cycle.state !== "ACCEPTED"
+    ) {
+      last = await dispatcher.step(cycle.cycle_id);
+      if (builderB.invocations >= 1 && last.cycle.state === "AWAITING_PC") break;
+    }
+    assert.equal(builderA.invocations, 0);
+    assert.equal(builderB.invocations, 1);
+
+    const selectedEv = handoff.store
+      .listEvents()
+      .filter((e) => e.event_type === "cycle.routing_selected");
+    const builderSelected = selectedEv.find(
+      (e) => (e.payload as { target_role?: string }).target_role === "builder",
+    );
+    assert.ok(builderSelected);
+    const payload = builderSelected!.payload as {
+      cycle_id: string;
+      request_id: string;
+      dispatch_id: string;
+      target_role: string;
+      binding_id: string;
+      baseline_binding_id: string;
+      automatic_escalation: boolean;
+      required_capabilities: string[];
+      observations: unknown[];
+      quota_observations: unknown[];
+      cost_observations: unknown[];
+      cost_constraint: { max_estimate: { amount_decimal: string; currency_code: string } };
+    };
+    assert.equal(payload.cycle_id, cycle.cycle_id);
+    assert.equal(payload.target_role, "builder");
+    assert.equal(payload.binding_id, "builder-b");
+    assert.equal(payload.baseline_binding_id, "builder-a");
+    assert.equal(payload.automatic_escalation, true);
+    assert.equal(payload.cost_constraint.max_estimate.amount_decimal, "100");
+    assert.equal(payload.cost_constraint.max_estimate.currency_code, "USD");
+    assert.ok(Array.isArray(payload.required_capabilities));
+    assert.ok(Array.isArray(payload.observations));
+    assert.ok(Array.isArray(payload.quota_observations));
+    assert.ok(Array.isArray(payload.cost_observations));
+    assert.doesNotMatch(JSON.stringify(payload), /stronger|premium|better/i);
+
+    const claimed = handoff.store
+      .listEvents()
+      .filter(
+        (e) =>
+          e.event_type === "cycle.dispatch_claimed" &&
+          (e.payload as { binding_id?: string }).binding_id === "builder-b",
+      );
+    assert.ok(claimed.length >= 1);
+    assert.equal(
+      (claimed[0]!.payload as { request_id: string }).request_id,
+      payload.request_id,
+    );
+
+    const buildReq = handoff
+      .listEnvelopes(cycle.cycle_id)
+      .find(
+        (e) =>
+          e.kind === "control_request" &&
+          e.request_id === payload.request_id,
+      ) as
+      | {
+          body: {
+            required_capabilities: string[];
+            authorized_finding_ids: string[];
+            base_sha: string;
+            target_sha: string | null;
+          };
+        }
+      | undefined;
+    assert.ok(buildReq);
+    assert.deepEqual(
+      buildReq!.body.required_capabilities,
+      payload.required_capabilities,
+    );
+    assert.deepEqual(buildReq!.body.authorized_finding_ids, ["f-keep"]);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("S12: primary claim emits automatic_escalation=false; no event on routing block", async () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock } = openHarness(dir);
+    const project = store.createProject("s12-primary");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-004",
+      baseSha: "base",
+    });
+    const pc = new FakeProgramControlAdapter(
+      [
+        pcDecision({
+          decision: "BUILD",
+          install_policy: null,
+        }),
+      ],
+      envClock,
+    );
+    const builder = new FakeBuilderAdapter(
+      [{ status: "CANDIDATE_READY", candidate_sha: "sha-p" }],
+      envClock,
+    );
+    const reviewer = new FakeReviewerAdapter([], envClock);
+    const registry = multiBuilderRegistry();
+    const catalog: RuntimeCatalogEntry[] = [
+      {
+        binding_id: "pc-main",
+        role: "program_control",
+        adapter: pc,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builder,
+        probe: available(),
+        costProbe: costWithin(),
+        quotaProbe: quotaAvailable(),
+      },
+      {
+        binding_id: "reviewer-main",
+        role: "reviewer",
+        adapter: reviewer,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+    ];
+    const dispatcher = new Dispatcher(
+      handoff,
+      { programControl: pc, builder, reviewer },
+      {
+        owner: "disp",
+        leaseMs: 60_000,
+        routing: { registry, catalog, costConstraint: TEST_COST_CONSTRAINT },
+      },
+    );
+    let last = await dispatcher.step(cycle.cycle_id);
+    while (
+      last.cycle.state !== "AWAITING_PC" &&
+      last.cycle.state !== "RECOVERY_REQUIRED"
+    ) {
+      last = await dispatcher.step(cycle.cycle_id);
+      if (builder.invocations >= 1) break;
+    }
+    const builderSelected = handoff.store
+      .listEvents()
+      .find(
+        (e) =>
+          e.event_type === "cycle.routing_selected" &&
+          (e.payload as { target_role?: string }).target_role === "builder",
+      );
+    assert.ok(builderSelected);
+    const payload = builderSelected!.payload as {
+      binding_id: string;
+      baseline_binding_id: string;
+      automatic_escalation: boolean;
+    };
+    assert.equal(payload.binding_id, "builder-a");
+    assert.equal(payload.baseline_binding_id, "builder-a");
+    assert.equal(payload.automatic_escalation, false);
+
+    // Separate blocked cycle: no routing_selected for builder
+    const cycle2 = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-004",
+      baseSha: "base2",
+    });
+    const pc2 = new FakeProgramControlAdapter(
+      [pcDecision({ decision: "BUILD", install_policy: null })],
+      envClock,
+    );
+    const builderFail = new FakeBuilderAdapter([], envClock);
+    const catalogBlock: RuntimeCatalogEntry[] = [
+      {
+        binding_id: "pc-main",
+        role: "program_control",
+        adapter: pc2,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderFail,
+        probe: available(),
+        costProbe: costOver(),
+        quotaProbe: quotaAvailable(),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: new FakeBuilderAdapter([], envClock),
+        probe: available(),
+        costProbe: costOver(),
+        quotaProbe: quotaAvailable(),
+      },
+      {
+        binding_id: "reviewer-main",
+        role: "reviewer",
+        adapter: reviewer,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+    ];
+    const blocked = new Dispatcher(
+      handoff,
+      { programControl: pc2, builder: builderFail, reviewer },
+      {
+        owner: "disp",
+        leaseMs: 60_000,
+        routing: {
+          registry,
+          catalog: catalogBlock,
+          costConstraint: TEST_COST_CONSTRAINT,
+        },
+      },
+    );
+    const before = handoff.store
+      .listEvents()
+      .filter(
+        (e) =>
+          e.event_type === "cycle.routing_selected" &&
+          (e.payload as { target_role?: string }).target_role === "builder",
+      ).length;
+    const blockedStep = await blocked.runUntilStable(cycle2.cycle_id);
+    assert.equal(blockedStep.action, "routing_blocked");
+    const after = handoff.store
+      .listEvents()
+      .filter(
+        (e) =>
+          e.event_type === "cycle.routing_selected" &&
+          (e.payload as { target_role?: string }).target_role === "builder",
+      ).length;
+    assert.equal(after, before);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("S12: after attribution pin retry does not emit escalated alternate", async () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock } = openHarness(dir);
+    const project = store.createProject("s12-pin-no-esc");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-004",
+      baseSha: "base",
+      maxDispatchRetries: 3,
+    });
+    const pc = new FakeProgramControlAdapter(
+      [
+        pcDecision({
+          decision: "BUILD",
+          install_policy: { on_builder_candidate: "AWAIT_PC" },
+        }),
+      ],
+      envClock,
+    );
+    let aCalls = 0;
+    const builderA = new FakeBuilderAdapter([], envClock);
+    const origBuild = builderA.build.bind(builderA);
+    builderA.build = (input) => {
+      aCalls += 1;
+      if (aCalls === 1) {
+        throw new Error("builder-a boom");
+      }
+      return origBuild(input);
+    };
+    builderA.identity = { adapter_id: "fake-builder", role: "builder" };
+    const builderB = new FakeBuilderAdapter(
+      [{ status: "CANDIDATE_READY", candidate_sha: "sha-b" }],
+      envClock,
+    );
+    builderB.identity = { adapter_id: "fake-builder-b", role: "builder" };
+    const reviewer = new FakeReviewerAdapter([], envClock);
+    reviewer.identity = { adapter_id: "catalog-reviewer", role: "reviewer" };
+    const registry = multiBuilderRegistry();
+    let aProbe: AvailabilityProbeFn = available();
+    const catalog: RuntimeCatalogEntry[] = [
+      {
+        binding_id: "pc-main",
+        role: "program_control",
+        adapter: pc,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: () => aProbe(),
+        costProbe: costWithin(),
+        quotaProbe: quotaAvailable(),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        costProbe: costWithin(),
+        quotaProbe: quotaAvailable(),
+      },
+      {
+        binding_id: "reviewer-main",
+        role: "reviewer",
+        adapter: reviewer,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+    ];
+    const dispatcher = new Dispatcher(
+      handoff,
+      { programControl: pc, builder: builderA, reviewer },
+      {
+        owner: "disp",
+        leaseMs: 60_000,
+        routing: { registry, catalog, costConstraint: TEST_COST_CONSTRAINT },
+      },
+    );
+    let last = await dispatcher.step(cycle.cycle_id);
+    while (aCalls === 0 && last.cycle.state !== "RECOVERY_REQUIRED") {
+      last = await dispatcher.step(cycle.cycle_id);
+    }
+    assert.equal(aCalls, 1);
+    // Make baseline unavailable so a naive reselect would pick builder-b.
+    aProbe = unavailable("agent");
+    // Drive recovery / retry on same request (pin).
+    for (let i = 0; i < 16; i += 1) {
+      last = await dispatcher.step(cycle.cycle_id);
+      if (aCalls >= 2) break;
+      if (
+        last.cycle.state === "RECOVERY_REQUIRED" ||
+        last.cycle.state === "ABORTED"
+      ) {
+        // pin block if unavailable — still must not invoke builder-b
+        break;
+      }
+    }
+    assert.equal(builderB.invocations, 0);
+    const escEvents = handoff.store
+      .listEvents()
+      .filter(
+        (e) =>
+          e.event_type === "cycle.routing_selected" &&
+          (e.payload as { automatic_escalation?: boolean })
+            .automatic_escalation === true &&
+          (e.payload as { binding_id?: string }).binding_id === "builder-b",
+      );
+    assert.equal(escEvents.length, 0);
+  } finally {
+    cleanup(dir);
+  }
+});

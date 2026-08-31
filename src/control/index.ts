@@ -53,6 +53,7 @@ export {
   observeCostForQuotaRoutableBindings,
   catalogByBindingId,
   eligibilityRequestFor,
+  automaticEscalationState,
 } from "./routing.js";
 export type {
   AvailabilityProbeFn,
@@ -66,4 +67,5 @@ export type {
   DurableQuotaRoutingObservation,
   DurableCostRoutingObservation,
   DurableCostConstraintSnapshot,
+  AutomaticEscalationState,
 } from "./routing.js";
