@@ -360,3 +360,240 @@ test("claimDispatch binding attribution, events, lifecycle, and per-attempt iden
     cleanup(dir);
   }
 });
+
+test("claimDispatch coupledEvent commits atomically with claim; rollback drops both (F001)", () => {
+  const dir = tempState();
+  try {
+    const store = ControlStore.open({ stateDir: dir, idFactory: seqIds() });
+    const handoff = new HandoffStore(store);
+    const project = store.createProject("s12-atomic");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-004-S12",
+      baseSha: "base",
+      maxDispatchRetries: 3,
+    });
+    const ts = store.now().toISOString();
+    const reqId = "req_atomic_ok";
+    handoff.persistEnvelope(controlRequest(cycle.cycle_id, reqId, ts));
+
+    const claimed = handoff.claimDispatch({
+      cycleId: cycle.cycle_id,
+      requestId: reqId,
+      targetRole: "builder",
+      owner: "owner-atomic",
+      leaseMs: 60_000,
+      bindingId: "binding-atomic",
+      coupledEvent: {
+        eventType: "cycle.routing_selected",
+        project_id: project.project_id,
+        work_id: null,
+        payload: {
+          cycle_id: cycle.cycle_id,
+          request_id: reqId,
+          target_role: "builder",
+          binding_id: "binding-atomic",
+          baseline_binding_id: "binding-atomic",
+          automatic_escalation: false,
+        },
+      },
+    });
+    assert.equal(claimed.state, "CLAIMED");
+    assert.equal(claimed.binding_id, "binding-atomic");
+
+    const claimedEv = store
+      .listEvents()
+      .filter(
+        (e) =>
+          e.event_type === "cycle.dispatch_claimed" &&
+          (e.payload as { dispatch_id?: string }).dispatch_id ===
+            claimed.dispatch_id,
+      );
+    const selectedEv = store
+      .listEvents()
+      .filter(
+        (e) =>
+          e.event_type === "cycle.routing_selected" &&
+          (e.payload as { dispatch_id?: string }).dispatch_id ===
+            claimed.dispatch_id,
+      );
+    assert.equal(claimedEv.length, 1);
+    assert.equal(selectedEv.length, 1);
+    assert.equal(
+      (selectedEv[0]!.payload as { binding_id: string }).binding_id,
+      "binding-atomic",
+    );
+
+    // Mid-write failure: coupledEvent throws after claim writes → full rollback.
+    const reqFail = "req_atomic_fail";
+    handoff.persistEnvelope(controlRequest(cycle.cycle_id, reqFail, ts));
+    const beforeDispatches = (
+      store.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM dispatches WHERE request_id = ?`,
+        )
+        .get(reqFail) as { n: number }
+    ).n;
+    const beforeEvents = store.listEvents().length;
+    const origAppend = store.appendEvent.bind(store);
+    store.appendEvent = ((eventType, args) => {
+      if (eventType === "cycle.routing_selected") {
+        throw new Error("simulated mid-write failure before COMMIT");
+      }
+      return origAppend(eventType, args);
+    }) as typeof store.appendEvent;
+
+    assert.throws(
+      () =>
+        handoff.claimDispatch({
+          cycleId: cycle.cycle_id,
+          requestId: reqFail,
+          targetRole: "builder",
+          owner: "owner-fail",
+          leaseMs: 60_000,
+          bindingId: "binding-fail",
+          coupledEvent: {
+            eventType: "cycle.routing_selected",
+            project_id: project.project_id,
+            work_id: null,
+            payload: {
+              cycle_id: cycle.cycle_id,
+              request_id: reqFail,
+              target_role: "builder",
+              binding_id: "binding-fail",
+              baseline_binding_id: "binding-fail",
+              automatic_escalation: false,
+            },
+          },
+        }),
+      /simulated mid-write failure/,
+    );
+
+    store.appendEvent = origAppend;
+    const afterDispatches = (
+      store.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM dispatches WHERE request_id = ?`,
+        )
+        .get(reqFail) as { n: number }
+    ).n;
+    assert.equal(afterDispatches, beforeDispatches);
+    assert.equal(store.listEvents().length, beforeEvents);
+    assert.equal(
+      store
+        .listEvents()
+        .filter(
+          (e) =>
+            e.event_type === "cycle.routing_selected" &&
+            (e.payload as { request_id?: string }).request_id === reqFail,
+        ).length,
+      0,
+    );
+    assert.equal(
+      store
+        .listEvents()
+        .filter(
+          (e) =>
+            e.event_type === "cycle.dispatch_claimed" &&
+            (e.payload as { request_id?: string }).request_id === reqFail,
+        ).length,
+      0,
+    );
+
+    store.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("claimDispatch RETRY_BUDGET recovery remains durable outside success txn (F001)", () => {
+  const dir = tempState();
+  try {
+    const store = ControlStore.open({ stateDir: dir, idFactory: seqIds() });
+    const handoff = new HandoffStore(store);
+    const project = store.createProject("s12-budget");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-004-S12",
+      baseSha: "base",
+      maxDispatchRetries: 1,
+    });
+    const ts = store.now().toISOString();
+    const reqId = "req_budget";
+    handoff.persistEnvelope(controlRequest(cycle.cycle_id, reqId, ts));
+
+    const first = handoff.claimDispatch({
+      cycleId: cycle.cycle_id,
+      requestId: reqId,
+      targetRole: "builder",
+      owner: "owner-1",
+      leaseMs: 60_000,
+      bindingId: "binding-budget",
+    });
+    store.db
+      .prepare(`UPDATE dispatches SET lease_expires_at = ? WHERE dispatch_id = ?`)
+      .run("2000-01-01T00:00:00.000Z", first.dispatch_id);
+
+    // If coupledEvent were wrongly inside a shared txn with enterRecovery, a
+    // throw here could roll back recovery. Budget path must not enter success txn.
+    const origAppend = store.appendEvent.bind(store);
+    let routingSelectedAttempts = 0;
+    store.appendEvent = ((eventType, args) => {
+      if (eventType === "cycle.routing_selected") {
+        routingSelectedAttempts += 1;
+        throw new Error("coupledEvent must not run on RETRY_BUDGET path");
+      }
+      return origAppend(eventType, args);
+    }) as typeof store.appendEvent;
+
+    assert.throws(
+      () =>
+        handoff.claimDispatch({
+          cycleId: cycle.cycle_id,
+          requestId: reqId,
+          targetRole: "builder",
+          owner: "owner-2",
+          leaseMs: 60_000,
+          bindingId: "binding-budget-2",
+          coupledEvent: {
+            eventType: "cycle.routing_selected",
+            project_id: project.project_id,
+            work_id: null,
+            payload: {
+              cycle_id: cycle.cycle_id,
+              request_id: reqId,
+              automatic_escalation: false,
+            },
+          },
+        }),
+      (err: unknown) =>
+        err instanceof ControlError && err.code === "RETRY_BUDGET",
+    );
+    store.appendEvent = origAppend;
+    assert.equal(routingSelectedAttempts, 0);
+
+    const recovered = handoff.requireCycle(cycle.cycle_id);
+    assert.equal(recovered.state, "RECOVERY_REQUIRED");
+    assert.equal(recovered.recovery_reason, "dispatch_retry_budget_exhausted");
+    assert.ok(
+      store
+        .listEvents()
+        .some((e) => e.event_type === "cycle.recovery_required"),
+    );
+
+    store.close();
+    const again = ControlStore.open({ stateDir: dir });
+    const h2 = new HandoffStore(again);
+    const live = h2.requireCycle(cycle.cycle_id);
+    assert.equal(live.state, "RECOVERY_REQUIRED");
+    assert.equal(live.recovery_reason, "dispatch_retry_budget_exhausted");
+    assert.ok(
+      again
+        .listEvents()
+        .some((e) => e.event_type === "cycle.recovery_required"),
+    );
+    again.close();
+  } finally {
+    cleanup(dir);
+  }
+});

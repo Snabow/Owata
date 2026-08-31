@@ -1,4 +1,4 @@
-import { ControlError } from "./types.js";
+import { ControlError, type EventType } from "./types.js";
 import type { ControlStore } from "./store.js";
 import { nowIso } from "./ids.js";
 import {
@@ -18,6 +18,15 @@ import {
   type PcDecisionKind,
 } from "./protocol.js";
 import type { CycleSnapshot } from "./adapters.js";
+
+/** Optional event inserted in the same successful claim transaction (A-034). */
+export type ClaimCoupledEvent = {
+  eventType: EventType;
+  payload: Record<string, unknown>;
+  project_id: string | null;
+  work_id: string | null;
+  ts?: string;
+};
 
 export type DispatchState =
   | "CLAIMED"
@@ -959,6 +968,12 @@ export class HandoffStore {
     leaseMs: number;
     /** Optional Router registry binding identity for this attempt. */
     bindingId?: string | null;
+    /**
+     * Optional durable event committed atomically with a successful claim
+     * (e.g. cycle.routing_selected). Inserted only inside the success
+     * transaction after dispatch CLAIMED + cycle.dispatch_claimed.
+     */
+    coupledEvent?: ClaimCoupledEvent;
   }): DispatchRecord {
     const ts = nowIso(() => this.store.now());
     const cycle = this.requireCycle(args.cycleId);
@@ -989,6 +1004,8 @@ export class HandoffStore {
       }
     }
     const attempt = (latest?.attempt_number ?? 0) + 1;
+    // RETRY_BUDGET adjudication + enterRecovery MUST stay outside the success
+    // transaction so recovery remains durable even if a later claim txn rolls back.
     if (attempt > cycle.max_dispatch_retries) {
       const roleRequestId =
         args.targetRole === "builder" || args.targetRole === "reviewer"
@@ -1011,61 +1028,74 @@ export class HandoffStore {
     const dispatchId = this.store.nextId("dsp");
     const fence = this.store.nextId("fence");
     const expires = new Date(this.store.now().getTime() + args.leaseMs).toISOString();
-    this.store.db
-      .prepare(
-        `INSERT INTO dispatches (
-           dispatch_id, cycle_id, request_id, attempt_number, fence_token, owner,
-           target_role, state, lease_expires_at, result_envelope_id,
-           failure_class, failure_detail, binding_id, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'CLAIMED', ?, NULL, NULL, NULL, ?, ?, ?)`,
-      )
-      .run(
-        dispatchId,
-        args.cycleId,
-        args.requestId,
-        attempt,
-        fence,
-        args.owner,
-        args.targetRole,
-        expires,
-        bindingId,
-        ts,
-        ts,
-      );
-    if (latest?.state === "CLAIMED") {
+    return this.store.runImmediate(() => {
       this.store.db
         .prepare(
-          `UPDATE dispatches SET state = 'RECOVERED', updated_at = ? WHERE dispatch_id = ?`,
+          `INSERT INTO dispatches (
+             dispatch_id, cycle_id, request_id, attempt_number, fence_token, owner,
+             target_role, state, lease_expires_at, result_envelope_id,
+             failure_class, failure_detail, binding_id, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, 'CLAIMED', ?, NULL, NULL, NULL, ?, ?, ?)`,
         )
-        .run(ts, latest.dispatch_id);
-      this.store.appendEvent("cycle.dispatch_recovered", {
+        .run(
+          dispatchId,
+          args.cycleId,
+          args.requestId,
+          attempt,
+          fence,
+          args.owner,
+          args.targetRole,
+          expires,
+          bindingId,
+          ts,
+          ts,
+        );
+      if (latest?.state === "CLAIMED") {
+        this.store.db
+          .prepare(
+            `UPDATE dispatches SET state = 'RECOVERED', updated_at = ? WHERE dispatch_id = ?`,
+          )
+          .run(ts, latest.dispatch_id);
+        this.store.appendEvent("cycle.dispatch_recovered", {
+          project_id: cycle.project_id,
+          work_id: null,
+          ts,
+          payload: {
+            cycle_id: args.cycleId,
+            request_id: args.requestId,
+            old_dispatch_id: latest.dispatch_id,
+            new_dispatch_id: dispatchId,
+            attempt_number: attempt,
+          },
+        });
+      }
+      this.store.appendEvent("cycle.dispatch_claimed", {
         project_id: cycle.project_id,
         work_id: null,
         ts,
         payload: {
           cycle_id: args.cycleId,
           request_id: args.requestId,
-          old_dispatch_id: latest.dispatch_id,
-          new_dispatch_id: dispatchId,
+          dispatch_id: dispatchId,
           attempt_number: attempt,
+          owner: args.owner,
+          fence_token: fence,
+          binding_id: bindingId,
         },
       });
-    }
-    this.store.appendEvent("cycle.dispatch_claimed", {
-      project_id: cycle.project_id,
-      work_id: null,
-      ts,
-      payload: {
-        cycle_id: args.cycleId,
-        request_id: args.requestId,
-        dispatch_id: dispatchId,
-        attempt_number: attempt,
-        owner: args.owner,
-        fence_token: fence,
-        binding_id: bindingId,
-      },
+      if (args.coupledEvent) {
+        this.store.appendEvent(args.coupledEvent.eventType, {
+          project_id: args.coupledEvent.project_id,
+          work_id: args.coupledEvent.work_id,
+          ts: args.coupledEvent.ts ?? ts,
+          payload: {
+            ...args.coupledEvent.payload,
+            dispatch_id: dispatchId,
+          },
+        });
+      }
+      return this.getDispatch(dispatchId)!;
     });
-    return this.getDispatch(dispatchId)!;
   }
 
   /**

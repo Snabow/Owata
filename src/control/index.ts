@@ -33,7 +33,7 @@ export type {
   CycleState,
   FailureClass,
 } from "./protocol.js";
-export { HandoffStore } from "./handoff.js";
+export { HandoffStore, type ClaimCoupledEvent } from "./handoff.js";
 export { Dispatcher } from "./dispatcher.js";
 export type {
   ProgramControlAdapter,

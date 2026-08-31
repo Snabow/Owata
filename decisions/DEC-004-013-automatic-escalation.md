@@ -79,6 +79,8 @@ No quality labels (`"stronger"` / `"premium"` / `"better"`).
 
 After successful **NEW** initial binding claim, append durable `cycle.routing_selected` with sanitized payload including: `cycle_id`, `request_id`, `dispatch_id`, `target_role`, `binding_id`, `baseline_binding_id`, `automatic_escalation` (boolean), `required_capabilities`, `observations`, `quota_observations`, `cost_observations`, `cost_constraint` (sanitized snapshot). Only after successful claim. No event if claim failed. Existing `cycle.dispatch_claimed` remains authoritative for attribution.
 
+**Atomicity (OWATA-REQ-0139 / OWATA-REQ-0138-F001):** `cycle.routing_selected` is committed inside the same `ControlStore.runImmediate()` success transaction as the new CLAIMED dispatch row, optional prior-CLAIMED recovery bookkeeping, and `cycle.dispatch_claimed` (via optional `claimDispatch({ coupledEvent })`). A failure before COMMIT leaves none of that new claim durable state. `RETRY_BUDGET` / `enterRecovery` remain outside that success transaction so recovery stays durable.
+
 Routing blocks unchanged; do not fabricate escalation on blocks. Schema remains v6. Provider registry / model-policy unchanged.
 
 ---

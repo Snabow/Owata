@@ -2671,6 +2671,17 @@ test("S12: durable cycle.routing_selected after successful escalated claim", asy
       (claimed[0]!.payload as { request_id: string }).request_id,
       payload.request_id,
     );
+    // F001 / A-034 atomicity: claim + routing_selected share dispatch_id
+    assert.equal(
+      (claimed[0]!.payload as { dispatch_id: string }).dispatch_id,
+      payload.dispatch_id,
+    );
+    const claimedRow = handoff.getDispatch(payload.dispatch_id);
+    assert.ok(claimedRow);
+    assert.equal(claimedRow!.binding_id, "builder-b");
+    assert.ok(
+      claimedRow!.state === "CLAIMED" || claimedRow!.state === "ACCEPTED",
+    );
 
     const buildReq = handoff
       .listEnvelopes(cycle.cycle_id)
@@ -2777,10 +2788,33 @@ test("S12: primary claim emits automatic_escalation=false; no event on routing b
       binding_id: string;
       baseline_binding_id: string;
       automatic_escalation: boolean;
+      dispatch_id: string;
+      request_id: string;
     };
     assert.equal(payload.binding_id, "builder-a");
     assert.equal(payload.baseline_binding_id, "builder-a");
     assert.equal(payload.automatic_escalation, false);
+    // F001 / A-034 atomicity: primary claim + routing_selected share dispatch_id
+    const claimedPrimary = handoff.store
+      .listEvents()
+      .find(
+        (e) =>
+          e.event_type === "cycle.dispatch_claimed" &&
+          (e.payload as { dispatch_id?: string }).dispatch_id ===
+            payload.dispatch_id,
+      );
+    assert.ok(claimedPrimary);
+    assert.equal(
+      (claimedPrimary!.payload as { binding_id: string }).binding_id,
+      "builder-a",
+    );
+    assert.equal(
+      (claimedPrimary!.payload as { request_id: string }).request_id,
+      payload.request_id,
+    );
+    const claimedRow = handoff.getDispatch(payload.dispatch_id);
+    assert.ok(claimedRow);
+    assert.equal(claimedRow!.binding_id, "builder-a");
 
     // Separate blocked cycle: no routing_selected for builder
     const cycle2 = handoff.createCycle({

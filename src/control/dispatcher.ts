@@ -612,19 +612,62 @@ export class Dispatcher {
     let dispatch: DispatchRecord;
     const claimedNew = !(leaseValid && existing);
     try {
-      dispatch =
-        leaseValid && existing
-          ? existing
-          : this.handoff.claimDispatch({
-              cycleId: cycle.cycle_id,
-              requestId: request.request_id!,
-              targetRole: role,
-              owner: this.options.owner,
-              leaseMs: this.options.leaseMs,
-              ...(this.options.routing
-                ? { bindingId: bindingId! }
-                : {}),
-            });
+      if (leaseValid && existing) {
+        dispatch = existing;
+      } else {
+        // A-034: couple cycle.routing_selected into the claim transaction so a
+        // crash between CLAIMED attribution and routing evidence cannot diverge.
+        let coupledEvent:
+          | {
+              eventType: "cycle.routing_selected";
+              project_id: string | null;
+              work_id: string | null;
+              payload: Record<string, unknown>;
+            }
+          | undefined;
+        if (
+          claimedNew &&
+          this.options.routing &&
+          initialSelection &&
+          bindingId != null
+        ) {
+          const { costConstraint } = this.ensureRoutingReady();
+          coupledEvent = {
+            eventType: "cycle.routing_selected",
+            project_id: cycle.project_id,
+            work_id: null,
+            payload: {
+              cycle_id: cycle.cycle_id,
+              request_id: request.request_id!,
+              target_role: role,
+              binding_id: bindingId,
+              baseline_binding_id: initialSelection.baseline_binding_id,
+              automatic_escalation:
+                initialSelection.automatic_escalation === "ESCALATED",
+              required_capabilities: [...request.body.required_capabilities],
+              observations: sanitizeRoutingObservations(
+                initialSelection.observations,
+              ),
+              quota_observations: sanitizeQuotaRoutingObservations(
+                initialSelection.quota_observations,
+              ),
+              cost_observations: sanitizeCostRoutingObservations(
+                initialSelection.cost_observations,
+              ),
+              cost_constraint: sanitizeCostConstraintSnapshot(costConstraint),
+            },
+          };
+        }
+        dispatch = this.handoff.claimDispatch({
+          cycleId: cycle.cycle_id,
+          requestId: request.request_id!,
+          targetRole: role,
+          owner: this.options.owner,
+          leaseMs: this.options.leaseMs,
+          ...(this.options.routing ? { bindingId: bindingId! } : {}),
+          ...(coupledEvent ? { coupledEvent } : {}),
+        });
+      }
     } catch (err) {
       // Claim failed → no cycle.routing_selected (A-034 durable success only).
       if (err instanceof ControlError && err.code === "RETRY_BUDGET") {
@@ -634,44 +677,6 @@ export class Dispatcher {
         };
       }
       throw err;
-    }
-
-    // Durable success evidence after NEW initial binding claim only (A-034).
-    // cycle.dispatch_claimed remains authoritative for attribution.
-    if (
-      claimedNew &&
-      this.options.routing &&
-      initialSelection &&
-      bindingId != null
-    ) {
-      const { costConstraint } = this.ensureRoutingReady();
-      const ts = nowIso(() => this.handoff.store.now());
-      this.handoff.store.appendEvent("cycle.routing_selected", {
-        project_id: cycle.project_id,
-        work_id: null,
-        ts,
-        payload: {
-          cycle_id: cycle.cycle_id,
-          request_id: request.request_id!,
-          dispatch_id: dispatch.dispatch_id,
-          target_role: role,
-          binding_id: bindingId,
-          baseline_binding_id: initialSelection.baseline_binding_id,
-          automatic_escalation:
-            initialSelection.automatic_escalation === "ESCALATED",
-          required_capabilities: [...request.body.required_capabilities],
-          observations: sanitizeRoutingObservations(
-            initialSelection.observations,
-          ),
-          quota_observations: sanitizeQuotaRoutingObservations(
-            initialSelection.quota_observations,
-          ),
-          cost_observations: sanitizeCostRoutingObservations(
-            initialSelection.cost_observations,
-          ),
-          cost_constraint: sanitizeCostConstraintSnapshot(costConstraint),
-        },
-      });
     }
 
     const abort = new AbortController();
