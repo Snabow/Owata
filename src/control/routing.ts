@@ -67,6 +67,13 @@ export type RuntimeCatalogEntry =
       costProbe?: CostProbeFn;
     };
 
+/**
+ * Explicit fenced failover opt-in (A-035).
+ * Missing → DISABLED (pin / no-alternate). `{ mode: "FENCED" }` → enabled.
+ * Malformed → ROUTING_CONFIG_INVALID. Not spend approval.
+ */
+export type FailoverPolicy = { mode: "FENCED" };
+
 export interface RoutingConfig {
   registry: ProviderRegistry;
   catalog: readonly RuntimeCatalogEntry[];
@@ -76,6 +83,11 @@ export interface RoutingConfig {
    * → ROUTING_CONFIG_INVALID. No default ceiling / quota-only fallback.
    */
   costConstraint?: CostRoutingConstraint;
+  /**
+   * Optional explicit fenced failover (A-035). Absent → DISABLED.
+   * Malformed → ROUTING_CONFIG_INVALID at Dispatcher construction / ensureRoutingReady.
+   */
+  failoverPolicy?: FailoverPolicy;
 }
 
 /** Router-native pre-dispatch block reasons (A-009 / A-020 / A-021 / A-028 / A-029; not FailureClass). */
@@ -180,6 +192,76 @@ export function requireCostRoutingConstraint(
     },
   };
 }
+
+/**
+ * Parse optional failoverPolicy (A-035).
+ * `undefined` → DISABLED (caller treats as no failover).
+ * Present but malformed → ROUTING_CONFIG_INVALID.
+ */
+export function parseFailoverPolicy(raw: unknown): FailoverPolicy | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ControlError(
+      "ROUTING_CONFIG_INVALID",
+      "routing failoverPolicy must be { mode: \"FENCED\" } when provided",
+    );
+  }
+  const obj = raw as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  if (keys.length !== 1 || keys[0] !== "mode" || obj.mode !== "FENCED") {
+    throw new ControlError(
+      "ROUTING_CONFIG_INVALID",
+      "routing failoverPolicy must be exactly { mode: \"FENCED\" }",
+    );
+  }
+  return { mode: "FENCED" };
+}
+
+/** True only for durably terminal prior attempts eligible for fenced failover (A-036). */
+export function isFailoverEligiblePrior(dispatch: {
+  state: string;
+  failure_class: string | null;
+}): boolean {
+  if (dispatch.state === "EXPIRED") {
+    return true;
+  }
+  if (dispatch.state === "REJECTED") {
+    return (
+      dispatch.failure_class === "AGENT_UNAVAILABLE" ||
+      dispatch.failure_class === "CREDENTIAL_UNAVAILABLE" ||
+      dispatch.failure_class === "RUNTIME_ERROR"
+    );
+  }
+  return false;
+}
+
+/**
+ * Failover selection outcome (A-038). Not S12 escalation evidence.
+ * SELECTED never carries automatic_escalation / baseline fields.
+ */
+export type FailoverBindingOutcome =
+  | {
+      status: "SELECTED";
+      binding_id: string;
+      entry: RuntimeCatalogEntry;
+      observations: AvailabilityObservation[];
+      quota_observations: QuotaObservation[];
+      cost_observations: CostObservation[];
+      excluded_binding_ids: string[];
+      quota_state?: "AVAILABLE" | "UNKNOWN";
+      cost_state: "ESTIMATE_AVAILABLE";
+      estimate: CostEstimate;
+    }
+  | {
+      status: "BLOCKED";
+      reason: RoutingBlockReason;
+      observations: AvailabilityObservation[];
+      quota_observations: QuotaObservation[];
+      cost_observations: CostObservation[];
+      excluded_binding_ids: string[];
+    };
 
 /**
  * Fail-closed validation of the explicit runtime catalog against the registry.
@@ -483,6 +565,154 @@ export async function selectRoutedBinding(args: {
       baselineBindingId,
       selectedBindingId,
     ),
+    quota_state: selected.quota_state,
+    cost_state: "ESTIMATE_AVAILABLE",
+    estimate: selected.estimate,
+  };
+}
+
+/**
+ * Post-terminal alternate selection under FENCED failover (A-038).
+ * Excludes every already-attempted binding_id for the request, then runs
+ * eligibility → availability → quota → cost on the remaining set.
+ * No candidate → BLOCKED (caller enters existing recovery; no fabricate).
+ * Does not emit S12 escalation evidence.
+ */
+export async function selectFailoverBinding(args: {
+  registry: ProviderRegistry;
+  catalog: ReadonlyMap<string, RuntimeCatalogEntry>;
+  request: EligibilityRequest;
+  costConstraint: CostRoutingConstraint;
+  excludeBindingIds: ReadonlySet<string>;
+}): Promise<FailoverBindingOutcome> {
+  const costConstraint = requireCostRoutingConstraint(args.costConstraint);
+  const excluded = [...args.excludeBindingIds].sort();
+
+  const eligibility = filterEligibleBindings(args.registry, args.request);
+  if (eligibility.status === "NO_ELIGIBLE_BINDING") {
+    return {
+      status: "BLOCKED",
+      reason: "NO_ELIGIBLE_BINDING",
+      observations: [],
+      quota_observations: [],
+      cost_observations: [],
+      excluded_binding_ids: excluded,
+    };
+  }
+
+  const untried = eligibility.bindings.filter(
+    (b) => !args.excludeBindingIds.has(b.binding_id),
+  );
+  if (untried.length === 0) {
+    return {
+      status: "BLOCKED",
+      reason: "NO_ELIGIBLE_BINDING",
+      observations: [],
+      quota_observations: [],
+      cost_observations: [],
+      excluded_binding_ids: excluded,
+    };
+  }
+
+  // Restrict registry to untried so S10 composition cannot reselect attempted ids.
+  const filteredRegistry: ProviderRegistry = {
+    protocol: args.registry.protocol,
+    bindings: untried,
+  };
+
+  const observations = await observeEligibleBindings(untried, args.catalog);
+  const availableIds = observations
+    .filter((o) => o.state === "AVAILABLE")
+    .map((o) => o.binding_id);
+  const quotaObservations = await observeQuotaForAvailableBindings(
+    availableIds,
+    args.catalog,
+  );
+  const costObservations = await observeCostForQuotaRoutableBindings(
+    quotaObservations,
+    args.catalog,
+  );
+
+  const selected = selectBindingWithQuotaAndCost(
+    filteredRegistry,
+    args.request,
+    observations,
+    quotaObservations,
+    costObservations,
+    costConstraint,
+  );
+
+  if (selected.status === "NO_ELIGIBLE_BINDING") {
+    return {
+      status: "BLOCKED",
+      reason: "NO_ELIGIBLE_BINDING",
+      observations,
+      quota_observations: quotaObservations,
+      cost_observations: costObservations,
+      excluded_binding_ids: excluded,
+    };
+  }
+  if (selected.status === "NO_AVAILABLE_BINDING") {
+    return {
+      status: "BLOCKED",
+      reason: "NO_AVAILABLE_BINDING",
+      observations,
+      quota_observations: quotaObservations,
+      cost_observations: costObservations,
+      excluded_binding_ids: excluded,
+    };
+  }
+  if (selected.status === "NO_QUOTA_ROUTABLE_BINDING") {
+    return {
+      status: "BLOCKED",
+      reason: "NO_QUOTA_ROUTABLE_BINDING",
+      observations,
+      quota_observations: quotaObservations,
+      cost_observations: costObservations,
+      excluded_binding_ids: excluded,
+    };
+  }
+  if (selected.status === "NO_COST_VERIFIABLE_BINDING") {
+    return {
+      status: "BLOCKED",
+      reason: "NO_COST_VERIFIABLE_BINDING",
+      observations,
+      quota_observations: quotaObservations,
+      cost_observations: costObservations,
+      excluded_binding_ids: excluded,
+    };
+  }
+
+  const entry = args.catalog.get(selected.binding.binding_id);
+  if (!entry) {
+    return {
+      status: "BLOCKED",
+      reason: "SELECTED_BINDING_NOT_IN_CATALOG",
+      observations,
+      quota_observations: quotaObservations,
+      cost_observations: costObservations,
+      excluded_binding_ids: excluded,
+    };
+  }
+  if (entry.role !== args.request.role) {
+    return {
+      status: "BLOCKED",
+      reason: "ROUTING_CONFIG_INVALID",
+      observations,
+      quota_observations: quotaObservations,
+      cost_observations: costObservations,
+      excluded_binding_ids: excluded,
+    };
+  }
+
+  return {
+    status: "SELECTED",
+    binding_id: selected.binding.binding_id,
+    entry,
+    observations,
+    quota_observations: quotaObservations,
+    cost_observations: costObservations,
+    excluded_binding_ids: excluded,
     quota_state: selected.quota_state,
     cost_state: "ESTIMATE_AVAILABLE",
     estimate: selected.estimate,

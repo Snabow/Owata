@@ -953,6 +953,21 @@ export class HandoffStore {
     return row ? mapDispatch(row) : undefined;
   }
 
+  /** All dispatches for a logical request, ascending attempt_number (A-038 exclusion set). */
+  listDispatchesForRequest(
+    cycleId: string,
+    requestId: string,
+  ): DispatchRecord[] {
+    const rows = this.store.db
+      .prepare(
+        `SELECT * FROM dispatches
+         WHERE cycle_id = ? AND request_id = ?
+         ORDER BY attempt_number ASC`,
+      )
+      .all(cycleId, requestId) as Array<Record<string, unknown>>;
+    return rows.map(mapDispatch);
+  }
+
   getDispatch(dispatchId: string): DispatchRecord | undefined {
     const row = this.store.db
       .prepare(`SELECT * FROM dispatches WHERE dispatch_id = ?`)

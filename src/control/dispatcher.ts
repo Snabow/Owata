@@ -29,14 +29,19 @@ import { assertPcDecisionAuthority } from "../program-control/authority.js";
 import {
   catalogByBindingId,
   eligibilityRequestFor,
+  isFailoverEligiblePrior,
+  parseFailoverPolicy,
   requireCostRoutingConstraint,
   resolvePinnedBinding,
   sanitizeCostConstraintSnapshot,
   sanitizeCostRoutingObservations,
   sanitizeQuotaRoutingObservations,
   sanitizeRoutingObservations,
+  selectFailoverBinding,
   selectRoutedBinding,
   validateRuntimeCatalog,
+  type FailoverBindingOutcome,
+  type FailoverPolicy,
   type RoutingConfig,
   type RoutedBindingOutcome,
   type RuntimeCatalogEntry,
@@ -117,6 +122,7 @@ export class Dispatcher {
     if (options.routing) {
       validateRuntimeCatalog(options.routing.registry, options.routing.catalog);
       requireCostRoutingConstraint(options.routing.costConstraint);
+      parseFailoverPolicy(options.routing.failoverPolicy);
       this.catalogValidated = true;
       this.catalogIndex = catalogByBindingId(options.routing.catalog);
     } else {
@@ -128,6 +134,7 @@ export class Dispatcher {
     registry: RoutingConfig["registry"];
     catalog: Map<string, RuntimeCatalogEntry>;
     costConstraint: CostRoutingConstraint;
+    failoverPolicy: FailoverPolicy | undefined;
   } {
     const routing = this.options.routing;
     if (!routing || !this.catalogIndex) {
@@ -141,10 +148,12 @@ export class Dispatcher {
       this.catalogValidated = true;
     }
     const costConstraint = requireCostRoutingConstraint(routing.costConstraint);
+    const failoverPolicy = parseFailoverPolicy(routing.failoverPolicy);
     return {
       registry: routing.registry,
       catalog: this.catalogIndex,
       costConstraint,
+      failoverPolicy,
     };
   }
   recover(now?: Date): number {
@@ -395,10 +404,16 @@ export class Dispatcher {
         bindingId: string;
         /** Present only for unattributed initial selection (A-031 / durable evidence). */
         initialSelection?: Extract<RoutedBindingOutcome, { status: "SELECTED" }>;
+        /** Present only for FENCED failover alternate selection (A-038 / durable evidence). */
+        failoverSelection?: Extract<FailoverBindingOutcome, { status: "SELECTED" }> & {
+          prior_binding_id: string;
+          prior_dispatch_id: string;
+        };
       }
     | { ok: false; step: StepResult }
   > {
-    const { registry, catalog, costConstraint } = this.ensureRoutingReady();
+    const { registry, catalog, costConstraint, failoverPolicy } =
+      this.ensureRoutingReady();
     const eligibility = eligibilityRequestFor(
       role as RoutableRole,
       request.body.required_capabilities,
@@ -406,7 +421,7 @@ export class Dispatcher {
 
     // Live same-owner CLAIMED lease (A-030): reuse attributed binding;
     // NO availability/quota/cost reprobe; NO constraint reevaluation.
-    // A-033: CLAIMED lease → NO escalation.
+    // A-033 / A-036: CLAIMED lease → NO escalation / NO failover.
     if (leaseValid && existing) {
       if (existing.binding_id == null) {
         return {
@@ -443,7 +458,71 @@ export class Dispatcher {
     }
 
     if (existing) {
-      // A-033: after attribution / pin → NO alternate / NO escalation.
+      // A-035/A-036: FENCED opt-in + eligible terminal latest → alternate, not pin.
+      if (
+        failoverPolicy?.mode === "FENCED" &&
+        isFailoverEligiblePrior(existing)
+      ) {
+        if (existing.binding_id == null) {
+          return {
+            ok: false,
+            step: this.enterRoutingBlock({
+              cycle,
+              request,
+              role,
+              reason: "ROUTING_PROVENANCE_MISSING",
+              pinnedBindingId: null,
+              observations: [],
+              costConstraint,
+            }),
+          };
+        }
+        const priorAttempts = this.handoff.listDispatchesForRequest(
+          cycle.cycle_id,
+          request.request_id!,
+        );
+        const excludeBindingIds = new Set<string>();
+        for (const d of priorAttempts) {
+          if (d.binding_id != null && d.binding_id.length > 0) {
+            excludeBindingIds.add(d.binding_id);
+          }
+        }
+        const failover = await selectFailoverBinding({
+          registry,
+          catalog,
+          request: eligibility,
+          costConstraint,
+          excludeBindingIds,
+        });
+        if (failover.status === "BLOCKED") {
+          return {
+            ok: false,
+            step: this.enterRoutingBlock({
+              cycle,
+              request,
+              role,
+              reason: failover.reason,
+              pinnedBindingId: null,
+              observations: failover.observations,
+              quotaObservations: failover.quota_observations,
+              costObservations: failover.cost_observations,
+              costConstraint,
+            }),
+          };
+        }
+        return {
+          ok: true,
+          entry: failover.entry,
+          bindingId: failover.binding_id,
+          failoverSelection: {
+            ...failover,
+            prior_binding_id: existing.binding_id,
+            prior_dispatch_id: existing.dispatch_id,
+          },
+        };
+      }
+
+      // A-033 / A-035 default: after attribution / pin → NO alternate / NO escalation.
       if (existing.binding_id == null) {
         return {
           ok: false,
@@ -554,6 +633,12 @@ export class Dispatcher {
     let initialSelection:
       | Extract<RoutedBindingOutcome, { status: "SELECTED" }>
       | undefined;
+    let failoverSelection:
+      | (Extract<FailoverBindingOutcome, { status: "SELECTED" }> & {
+          prior_binding_id: string;
+          prior_dispatch_id: string;
+        })
+      | undefined;
 
     if (this.options.routing) {
       const resolved = await this.resolveRoutedAdapter(
@@ -569,6 +654,7 @@ export class Dispatcher {
       adapter = resolved.entry.adapter;
       bindingId = resolved.bindingId;
       initialSelection = resolved.initialSelection;
+      failoverSelection = resolved.failoverSelection;
     } else {
       adapter = this.adapterFor(role);
     }
@@ -615,17 +701,52 @@ export class Dispatcher {
       if (leaseValid && existing) {
         dispatch = existing;
       } else {
-        // A-034: couple cycle.routing_selected into the claim transaction so a
-        // crash between CLAIMED attribution and routing evidence cannot diverge.
+        // A-034 / A-039: couple routing_selected or failover_selected into the
+        // claim transaction so crash between CLAIMED attribution and routing
+        // evidence cannot diverge. Never both; failover is not S12 escalation.
         let coupledEvent:
           | {
-              eventType: "cycle.routing_selected";
+              eventType: "cycle.routing_selected" | "cycle.failover_selected";
               project_id: string | null;
               work_id: string | null;
               payload: Record<string, unknown>;
             }
           | undefined;
         if (
+          claimedNew &&
+          this.options.routing &&
+          failoverSelection &&
+          bindingId != null
+        ) {
+          const { costConstraint } = this.ensureRoutingReady();
+          coupledEvent = {
+            eventType: "cycle.failover_selected",
+            project_id: cycle.project_id,
+            work_id: null,
+            payload: {
+              cycle_id: cycle.cycle_id,
+              request_id: request.request_id!,
+              target_role: role,
+              binding_id: bindingId,
+              prior_binding_id: failoverSelection.prior_binding_id,
+              prior_dispatch_id: failoverSelection.prior_dispatch_id,
+              excluded_binding_ids: [
+                ...failoverSelection.excluded_binding_ids,
+              ],
+              required_capabilities: [...request.body.required_capabilities],
+              observations: sanitizeRoutingObservations(
+                failoverSelection.observations,
+              ),
+              quota_observations: sanitizeQuotaRoutingObservations(
+                failoverSelection.quota_observations,
+              ),
+              cost_observations: sanitizeCostRoutingObservations(
+                failoverSelection.cost_observations,
+              ),
+              cost_constraint: sanitizeCostConstraintSnapshot(costConstraint),
+            },
+          };
+        } else if (
           claimedNew &&
           this.options.routing &&
           initialSelection &&

@@ -45,6 +45,7 @@ export type EventType =
   | "cycle.capability_blocked"
   | "cycle.routing_blocked"
   | "cycle.routing_selected"
+  | "cycle.failover_selected"
   | "cycle.result_accepted"
   | "cycle.result_rejected"
   | "cycle.decision_persisted"

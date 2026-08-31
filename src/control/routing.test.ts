@@ -7,8 +7,11 @@ import test from "node:test";
 import { ControlError, ControlStore, Dispatcher, HandoffStore } from "./index.js";
 import {
   catalogByBindingId,
+  isFailoverEligiblePrior,
+  parseFailoverPolicy,
   resolvePinnedBinding,
   sanitizeRoutingObservations,
+  selectFailoverBinding,
   selectRoutedBinding,
   validateRuntimeCatalog,
   type AvailabilityProbeFn,
@@ -20,7 +23,7 @@ import {
   FakeProgramControlAdapter,
   FakeReviewerAdapter,
 } from "./fixtures/fake-adapters.js";
-import type { PcDecisionBody } from "./protocol.js";
+import { PROTOCOL_V1, type PcDecisionBody } from "./protocol.js";
 import {
   PROVIDER_REGISTRY_PROTOCOL,
   parseProviderRegistryJson,
@@ -3005,6 +3008,1345 @@ test("S12: after attribution pin retry does not emit escalated alternate", async
           (e.payload as { binding_id?: string }).binding_id === "builder-b",
       );
     assert.equal(escEvents.length, 0);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+// ─── WP-004-S13 Failover Under Fencing ─────────────────────────────────────
+
+function threeBuilderRegistry(): ProviderRegistry {
+  return parseProviderRegistryJson(
+    JSON.stringify({
+      protocol: PROVIDER_REGISTRY_PROTOCOL,
+      bindings: [
+        {
+          binding_id: "builder-a",
+          role: "builder",
+          provider_id: "prov-a",
+          runtime_id: "rt-a",
+          capabilities: [...BUILD_CAPS],
+          priority: 10,
+          enabled: true,
+        },
+        {
+          binding_id: "builder-b",
+          role: "builder",
+          provider_id: "prov-b",
+          runtime_id: "rt-b",
+          capabilities: [...BUILD_CAPS],
+          priority: 20,
+          enabled: true,
+        },
+        {
+          binding_id: "builder-c",
+          role: "builder",
+          provider_id: "prov-c",
+          runtime_id: "rt-c",
+          capabilities: [...BUILD_CAPS],
+          priority: 30,
+          enabled: true,
+        },
+        {
+          binding_id: "pc-main",
+          role: "program_control",
+          provider_id: "prov-pc",
+          runtime_id: "rt-pc",
+          capabilities: ["repository_read"],
+          priority: 10,
+          enabled: true,
+        },
+        {
+          binding_id: "reviewer-main",
+          role: "reviewer",
+          provider_id: "prov-rev",
+          runtime_id: "rt-rev",
+          capabilities: [...REVIEW_CAPS],
+          priority: 10,
+          enabled: true,
+        },
+      ],
+    }),
+  );
+}
+
+test("S13: parseFailoverPolicy opt-in / malformed", () => {
+  assert.equal(parseFailoverPolicy(undefined), undefined);
+  assert.deepEqual(parseFailoverPolicy({ mode: "FENCED" }), { mode: "FENCED" });
+  for (const bad of [
+    null,
+    "FENCED",
+    {},
+    { mode: "AUTO" },
+    { mode: "FENCED", extra: 1 },
+    [],
+  ]) {
+    assert.throws(
+      () => parseFailoverPolicy(bad),
+      (err: unknown) =>
+        err instanceof ControlError && err.code === "ROUTING_CONFIG_INVALID",
+    );
+  }
+});
+
+test("S13: isFailoverEligiblePrior only EXPIRED and allowed REJECTED classes", () => {
+  assert.equal(isFailoverEligiblePrior({ state: "EXPIRED", failure_class: null }), true);
+  for (const fc of [
+    "AGENT_UNAVAILABLE",
+    "CREDENTIAL_UNAVAILABLE",
+    "RUNTIME_ERROR",
+  ] as const) {
+    assert.equal(
+      isFailoverEligiblePrior({ state: "REJECTED", failure_class: fc }),
+      true,
+    );
+  }
+  for (const fc of [
+    "CAPABILITY_BLOCK",
+    "REPO_UNAVAILABLE",
+    "RESULT_INVALID",
+    "RESULT_STALE",
+    "PRODUCT_FAILURE",
+  ] as const) {
+    assert.equal(
+      isFailoverEligiblePrior({ state: "REJECTED", failure_class: fc }),
+      false,
+    );
+  }
+  for (const state of ["CLAIMED", "ACCEPTED", "RECOVERED"] as const) {
+    assert.equal(
+      isFailoverEligiblePrior({ state, failure_class: "RUNTIME_ERROR" }),
+      false,
+    );
+  }
+});
+
+test("S13: default / absent failoverPolicy preserves pin no-alternate", async () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock } = openHarness(dir);
+    const project = store.createProject("s13-default");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-004",
+      baseSha: "base",
+      maxDispatchRetries: 3,
+    });
+    const pc = new FakeProgramControlAdapter(
+      [
+        pcDecision({
+          decision: "BUILD",
+          install_policy: { on_builder_candidate: "AWAIT_PC" },
+        }),
+      ],
+      envClock,
+    );
+    let aCalls = 0;
+    const builderA = new FakeBuilderAdapter([], envClock);
+    builderA.build = async () => {
+      aCalls += 1;
+      throw new Error("builder-a boom");
+    };
+    builderA.identity = { adapter_id: "fake-builder", role: "builder" };
+    const builderB = new FakeBuilderAdapter(
+      [{ status: "CANDIDATE_READY", candidate_sha: "sha-b" }],
+      envClock,
+    );
+    builderB.identity = { adapter_id: "fake-builder", role: "builder" };
+    const reviewer = new FakeReviewerAdapter([], envClock);
+    const registry = multiBuilderRegistry();
+    let aProbe: AvailabilityProbeFn = available();
+    const catalog: RuntimeCatalogEntry[] = [
+      {
+        binding_id: "pc-main",
+        role: "program_control",
+        adapter: pc,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: () => aProbe(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "reviewer-main",
+        role: "reviewer",
+        adapter: reviewer,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+    ];
+    // No failoverPolicy → DISABLED
+    const dispatcher = new Dispatcher(
+      handoff,
+      { programControl: pc, builder: builderA, reviewer },
+      {
+        owner: "disp",
+        leaseMs: 60_000,
+        routing: { registry, catalog, costConstraint: TEST_COST_CONSTRAINT },
+      },
+    );
+    let last = await dispatcher.step(cycle.cycle_id);
+    while (aCalls === 0 && last.cycle.state !== "RECOVERY_REQUIRED") {
+      last = await dispatcher.step(cycle.cycle_id);
+      if (last.action === "runtime_error") break;
+    }
+    assert.equal(aCalls, 1);
+    aProbe = unavailable("agent");
+    last = await dispatcher.step(cycle.cycle_id);
+    assert.equal(last.action, "routing_blocked");
+    assert.equal(builderB.invocations, 0);
+    assert.equal(
+      handoff.store.listEvents().filter((e) => e.event_type === "cycle.failover_selected")
+        .length,
+      0,
+    );
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("S13: malformed failoverPolicy → ROUTING_CONFIG_INVALID at construction", () => {
+  const registry = multiBuilderRegistry();
+  const pc = new FakeProgramControlAdapter([], { id: () => "x", now: () => "t" });
+  const builder = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const reviewer = new FakeReviewerAdapter([], { id: () => "x", now: () => "t" });
+  const dir = tempState();
+  try {
+    const { store, handoff } = openHarness(dir);
+    assert.throws(
+      () =>
+        new Dispatcher(
+          handoff,
+          { programControl: pc, builder, reviewer },
+          {
+            owner: "disp",
+            leaseMs: 60_000,
+            routing: {
+              registry,
+              catalog: [
+                {
+                  binding_id: "pc-main",
+                  role: "program_control",
+                  adapter: pc,
+                  probe: available(),
+                  costProbe: costWithin(),
+                },
+                {
+                  binding_id: "builder-a",
+                  role: "builder",
+                  adapter: builder,
+                  probe: available(),
+                  costProbe: costWithin(),
+                },
+                {
+                  binding_id: "reviewer-main",
+                  role: "reviewer",
+                  adapter: reviewer,
+                  probe: available(),
+                  costProbe: costWithin(),
+                },
+              ],
+              costConstraint: TEST_COST_CONSTRAINT,
+              failoverPolicy: { mode: "AUTO" } as never,
+            },
+          },
+        ),
+      (err: unknown) =>
+        err instanceof ControlError && err.code === "ROUTING_CONFIG_INVALID",
+    );
+  } finally {
+    cleanup(dir);
+  }
+});
+
+async function driveToBuilderReject(args: {
+  handoff: HandoffStore;
+  dispatcher: Dispatcher;
+  cycleId: string;
+  failBuilder: FakeBuilderAdapter;
+  failWith: Error | ControlError;
+}): Promise<{
+  requestId: string;
+  first: { dispatch_id: string; fence_token: string; attempt_number: number; binding_id: string | null; state: string; failure_class: string | null };
+}> {
+  const orig = args.failBuilder.build.bind(args.failBuilder);
+  let calls = 0;
+  args.failBuilder.build = async (input) => {
+    calls += 1;
+    if (calls === 1) throw args.failWith;
+    return orig(input);
+  };
+  let last = await args.dispatcher.step(args.cycleId);
+  while (calls === 0 && last.cycle.state !== "RECOVERY_REQUIRED") {
+    last = await args.dispatcher.step(args.cycleId);
+    if (last.action === "runtime_error" || last.action === "result_invalid" || last.action === "result_stale") break;
+  }
+  assert.ok(calls >= 1);
+  const row = args.handoff.store.db
+    .prepare(
+      `SELECT dispatch_id, fence_token, attempt_number, binding_id, state, failure_class
+       FROM dispatches WHERE target_role = 'builder' ORDER BY attempt_number LIMIT 1`,
+    )
+    .get() as {
+    dispatch_id: string;
+    fence_token: string;
+    attempt_number: number;
+    binding_id: string | null;
+    state: string;
+    failure_class: string | null;
+  };
+  const requestId = args.handoff.requireCycle(args.cycleId).current_request_id!;
+  return { requestId, first: row };
+}
+
+test("S13: eligible REJECTED+RUNTIME_ERROR fails over to alternate with identity + evidence", async () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock } = openHarness(dir);
+    const project = store.createProject("s13-runtime");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-004",
+      baseSha: "base",
+      maxDispatchRetries: 4,
+    });
+    const pc = new FakeProgramControlAdapter(
+      [
+        pcDecision({
+          decision: "BUILD",
+          install_policy: { on_builder_candidate: "AWAIT_PC" },
+        }),
+      ],
+      envClock,
+    );
+    const builderA = new FakeBuilderAdapter([], envClock);
+    builderA.identity = { adapter_id: "fake-builder", role: "builder" };
+    const builderB = new FakeBuilderAdapter(
+      [{ status: "CANDIDATE_READY", candidate_sha: "sha-failover" }],
+      envClock,
+    );
+    builderB.identity = { adapter_id: "fake-builder", role: "builder" };
+    const reviewer = new FakeReviewerAdapter([], envClock);
+    const registry = multiBuilderRegistry();
+    const catalog: RuntimeCatalogEntry[] = [
+      {
+        binding_id: "pc-main",
+        role: "program_control",
+        adapter: pc,
+        probe: available(),
+        costProbe: costWithin(),
+        quotaProbe: quotaAvailable(),
+      },
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+        costProbe: costWithin(),
+        quotaProbe: quotaAvailable(),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        costProbe: costWithin("2"),
+        quotaProbe: quotaAvailable(),
+      },
+      {
+        binding_id: "reviewer-main",
+        role: "reviewer",
+        adapter: reviewer,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+    ];
+    const dispatcher = new Dispatcher(
+      handoff,
+      { programControl: pc, builder: builderA, reviewer },
+      {
+        owner: "disp",
+        leaseMs: 60_000,
+        routing: {
+          registry,
+          catalog,
+          costConstraint: TEST_COST_CONSTRAINT,
+          failoverPolicy: { mode: "FENCED" },
+        },
+      },
+    );
+    const { requestId, first } = await driveToBuilderReject({
+      handoff,
+      dispatcher,
+      cycleId: cycle.cycle_id,
+      failBuilder: builderA,
+      failWith: new Error("runtime boom"),
+    });
+    assert.equal(first.state, "REJECTED");
+    assert.equal(first.failure_class, "RUNTIME_ERROR");
+    assert.equal(first.binding_id, "builder-a");
+
+    let last = await dispatcher.step(cycle.cycle_id);
+    while (
+      builderB.invocations === 0 &&
+      last.cycle.state !== "RECOVERY_REQUIRED" &&
+      last.cycle.state !== "AWAITING_PC"
+    ) {
+      last = await dispatcher.step(cycle.cycle_id);
+      if (builderB.invocations >= 1) break;
+    }
+    assert.equal(builderB.invocations, 1);
+
+    const builds = handoff.listDispatchesForRequest(cycle.cycle_id, requestId);
+    assert.equal(builds.length, 2);
+    assert.equal(builds[0]!.binding_id, "builder-a");
+    assert.equal(builds[1]!.binding_id, "builder-b");
+    assert.equal(builds[1]!.request_id, requestId);
+    assert.equal(builds[1]!.request_id, builds[0]!.request_id);
+    assert.notEqual(builds[1]!.dispatch_id, builds[0]!.dispatch_id);
+    assert.notEqual(builds[1]!.fence_token, builds[0]!.fence_token);
+    assert.equal(builds[1]!.attempt_number, builds[0]!.attempt_number + 1);
+
+    const fo = handoff.store
+      .listEvents()
+      .filter((e) => e.event_type === "cycle.failover_selected");
+    assert.equal(fo.length, 1);
+    const payload = fo[0]!.payload as {
+      request_id: string;
+      dispatch_id: string;
+      binding_id: string;
+      prior_binding_id: string;
+      prior_dispatch_id: string;
+      cost_constraint: { max_estimate: { amount_decimal: string; currency_code: string } };
+      excluded_binding_ids: string[];
+    };
+    assert.equal(payload.request_id, requestId);
+    assert.equal(payload.dispatch_id, builds[1]!.dispatch_id);
+    assert.equal(payload.binding_id, "builder-b");
+    assert.equal(payload.prior_binding_id, "builder-a");
+    assert.equal(payload.prior_dispatch_id, builds[0]!.dispatch_id);
+    assert.deepEqual(payload.excluded_binding_ids, ["builder-a"]);
+    assert.equal(payload.cost_constraint.max_estimate.amount_decimal, "100");
+    assert.equal(payload.cost_constraint.max_estimate.currency_code, "USD");
+    assert.equal(
+      handoff.store.listEvents().filter((e) => e.event_type === "cycle.routing_selected")
+        .filter((e) => (e.payload as { target_role?: string }).target_role === "builder")
+        .length,
+      1,
+    ); // initial claim only
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("S13: eligible AGENT_UNAVAILABLE / CREDENTIAL_UNAVAILABLE / EXPIRED fail over", async () => {
+  for (const kind of ["agent", "cred", "expired"] as const) {
+    const dir = tempState();
+    try {
+      const { store, handoff, envClock } = openHarness(dir);
+      const project = store.createProject(`s13-${kind}`);
+      const cycle = handoff.createCycle({
+        projectId: project.project_id,
+        workPackageRef: "WP-004",
+        baseSha: "base",
+        maxDispatchRetries: 4,
+      });
+      const pc = new FakeProgramControlAdapter(
+        [
+          pcDecision({
+            decision: "BUILD",
+            install_policy: { on_builder_candidate: "AWAIT_PC" },
+          }),
+        ],
+        envClock,
+      );
+      const builderA = new FakeBuilderAdapter([], envClock);
+      builderA.identity = { adapter_id: "fake-builder", role: "builder" };
+      const builderB = new FakeBuilderAdapter(
+        [{ status: "CANDIDATE_READY", candidate_sha: `sha-${kind}` }],
+        envClock,
+      );
+      builderB.identity = { adapter_id: "fake-builder", role: "builder" };
+      const reviewer = new FakeReviewerAdapter([], envClock);
+      const registry = multiBuilderRegistry();
+      const catalog: RuntimeCatalogEntry[] = [
+        {
+          binding_id: "pc-main",
+          role: "program_control",
+          adapter: pc,
+          probe: available(),
+          costProbe: costWithin(),
+        },
+        {
+          binding_id: "builder-a",
+          role: "builder",
+          adapter: builderA,
+          probe: available(),
+          costProbe: costWithin(),
+        },
+        {
+          binding_id: "builder-b",
+          role: "builder",
+          adapter: builderB,
+          probe: available(),
+          costProbe: costWithin(),
+        },
+        {
+          binding_id: "reviewer-main",
+          role: "reviewer",
+          adapter: reviewer,
+          probe: available(),
+          costProbe: costWithin(),
+        },
+      ];
+      const dispatcher = new Dispatcher(
+        handoff,
+        { programControl: pc, builder: builderA, reviewer },
+        {
+          owner: "disp",
+          leaseMs: 60_000,
+          routing: {
+            registry,
+            catalog,
+            costConstraint: TEST_COST_CONSTRAINT,
+            failoverPolicy: { mode: "FENCED" },
+          },
+        },
+      );
+
+      if (kind === "expired") {
+        let last = await dispatcher.step(cycle.cycle_id);
+        while (last.cycle.state !== "DISPATCHING_BUILD") {
+          last = await dispatcher.step(cycle.cycle_id);
+        }
+        const reqId = last.cycle.current_request_id!;
+        // Claim A then force EXPIRED (fence dead)
+        const claimed = handoff.claimDispatch({
+          cycleId: cycle.cycle_id,
+          requestId: reqId,
+          targetRole: "builder",
+          owner: "disp",
+          leaseMs: 1,
+          bindingId: "builder-a",
+        });
+        store.db
+          .prepare(
+            `UPDATE dispatches SET state = 'EXPIRED', lease_expires_at = ? WHERE dispatch_id = ?`,
+          )
+          .run(new Date(0).toISOString(), claimed.dispatch_id);
+        last = await dispatcher.step(cycle.cycle_id);
+        while (
+          builderB.invocations === 0 &&
+          last.cycle.state !== "RECOVERY_REQUIRED" &&
+          last.cycle.state !== "AWAITING_PC"
+        ) {
+          last = await dispatcher.step(cycle.cycle_id);
+          if (builderB.invocations >= 1) break;
+        }
+        assert.equal(builderB.invocations, 1, `expired→failover`);
+        const builds = handoff.listDispatchesForRequest(cycle.cycle_id, reqId);
+        assert.equal(builds[1]!.binding_id, "builder-b");
+      } else {
+        const code =
+          kind === "agent" ? "AGENT_UNAVAILABLE" : "CREDENTIAL_UNAVAILABLE";
+        const { requestId } = await driveToBuilderReject({
+          handoff,
+          dispatcher,
+          cycleId: cycle.cycle_id,
+          failBuilder: builderA,
+          failWith: new ControlError(code, `${kind} down`),
+        });
+        let last = await dispatcher.step(cycle.cycle_id);
+        while (
+          builderB.invocations === 0 &&
+          last.cycle.state !== "RECOVERY_REQUIRED"
+        ) {
+          last = await dispatcher.step(cycle.cycle_id);
+          if (builderB.invocations >= 1) break;
+        }
+        assert.equal(builderB.invocations, 1, `${kind}→failover`);
+        const builds = handoff.listDispatchesForRequest(cycle.cycle_id, requestId);
+        assert.equal(builds[0]!.failure_class, code);
+        assert.equal(builds[1]!.binding_id, "builder-b");
+      }
+    } finally {
+      cleanup(dir);
+    }
+  }
+});
+
+test("S13: excluded terminal classes do not fail over", async () => {
+  for (const fc of [
+    "CAPABILITY_BLOCK",
+    "REPO_UNAVAILABLE",
+    "RESULT_INVALID",
+    "RESULT_STALE",
+    "PRODUCT_FAILURE",
+  ] as const) {
+    const dir = tempState();
+    try {
+      const { store, handoff, envClock } = openHarness(dir);
+      const project = store.createProject(`s13-excl-${fc}`);
+      const cycle = handoff.createCycle({
+        projectId: project.project_id,
+        workPackageRef: "WP-004",
+        baseSha: "base",
+        maxDispatchRetries: 4,
+      });
+      const pc = new FakeProgramControlAdapter(
+        [
+          pcDecision({
+            decision: "BUILD",
+            install_policy: { on_builder_candidate: "AWAIT_PC" },
+          }),
+        ],
+        envClock,
+      );
+      const builderA = new FakeBuilderAdapter([], envClock);
+      builderA.identity = { adapter_id: "fake-builder", role: "builder" };
+      const builderB = new FakeBuilderAdapter(
+        [{ status: "CANDIDATE_READY", candidate_sha: "sha-x" }],
+        envClock,
+      );
+      builderB.identity = { adapter_id: "fake-builder", role: "builder" };
+      const reviewer = new FakeReviewerAdapter([], envClock);
+      let aProbe: AvailabilityProbeFn = available();
+      const catalog: RuntimeCatalogEntry[] = [
+        {
+          binding_id: "pc-main",
+          role: "program_control",
+          adapter: pc,
+          probe: available(),
+          costProbe: costWithin(),
+        },
+        {
+          binding_id: "builder-a",
+          role: "builder",
+          adapter: builderA,
+          probe: () => aProbe(),
+          costProbe: costWithin(),
+        },
+        {
+          binding_id: "builder-b",
+          role: "builder",
+          adapter: builderB,
+          probe: available(),
+          costProbe: costWithin(),
+        },
+        {
+          binding_id: "reviewer-main",
+          role: "reviewer",
+          adapter: reviewer,
+          probe: available(),
+          costProbe: costWithin(),
+        },
+      ];
+      const dispatcher = new Dispatcher(
+        handoff,
+        { programControl: pc, builder: builderA, reviewer },
+        {
+          owner: "disp",
+          leaseMs: 60_000,
+          routing: {
+            registry: multiBuilderRegistry(),
+            catalog,
+            costConstraint: TEST_COST_CONSTRAINT,
+            failoverPolicy: { mode: "FENCED" },
+          },
+        },
+      );
+      let last = await dispatcher.step(cycle.cycle_id);
+      while (last.cycle.state !== "DISPATCHING_BUILD") {
+        last = await dispatcher.step(cycle.cycle_id);
+      }
+      const reqId = last.cycle.current_request_id!;
+      const claimed = handoff.claimDispatch({
+        cycleId: cycle.cycle_id,
+        requestId: reqId,
+        targetRole: "builder",
+        owner: "disp",
+        leaseMs: 60_000,
+        bindingId: "builder-a",
+      });
+      handoff.rejectResult({
+        dispatchId: claimed.dispatch_id,
+        fenceToken: claimed.fence_token,
+        failureClass: fc,
+        detail: `excluded ${fc}`,
+      });
+      aProbe = unavailable("agent");
+      last = await dispatcher.step(cycle.cycle_id);
+      assert.equal(builderB.invocations, 0, `no failover for ${fc}`);
+      assert.equal(last.action, "routing_blocked");
+      assert.equal(
+        handoff.store.listEvents().filter((e) => e.event_type === "cycle.failover_selected")
+          .length,
+        0,
+      );
+    } finally {
+      cleanup(dir);
+    }
+  }
+});
+
+test("S13: live CLAIMED does not fail over", async () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock } = openHarness(dir);
+    const project = store.createProject("s13-claimed");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-004",
+      baseSha: "base",
+      maxDispatchRetries: 4,
+    });
+    const pc = new FakeProgramControlAdapter(
+      [
+        pcDecision({
+          decision: "BUILD",
+          install_policy: { on_builder_candidate: "AWAIT_PC" },
+        }),
+      ],
+      envClock,
+    );
+    const builderA = new FakeBuilderAdapter(
+      [{ status: "CANDIDATE_READY", candidate_sha: "sha-a" }],
+      envClock,
+    );
+    builderA.identity = { adapter_id: "fake-builder", role: "builder" };
+    const builderB = new FakeBuilderAdapter(
+      [{ status: "CANDIDATE_READY", candidate_sha: "sha-b" }],
+      envClock,
+    );
+    builderB.identity = { adapter_id: "fake-builder", role: "builder" };
+    const reviewer = new FakeReviewerAdapter([], envClock);
+    const catalog: RuntimeCatalogEntry[] = [
+      {
+        binding_id: "pc-main",
+        role: "program_control",
+        adapter: pc,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "reviewer-main",
+        role: "reviewer",
+        adapter: reviewer,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+    ];
+    const dispatcher = new Dispatcher(
+      handoff,
+      { programControl: pc, builder: builderA, reviewer },
+      {
+        owner: "disp",
+        leaseMs: 60_000,
+        routing: {
+          registry: multiBuilderRegistry(),
+          catalog,
+          costConstraint: TEST_COST_CONSTRAINT,
+          failoverPolicy: { mode: "FENCED" },
+        },
+      },
+    );
+    let last = await dispatcher.step(cycle.cycle_id);
+    while (last.cycle.state !== "DISPATCHING_BUILD") {
+      last = await dispatcher.step(cycle.cycle_id);
+    }
+    const reqId = last.cycle.current_request_id!;
+    // Pre-claim live same-owner lease (A-030 reuse; A-036 no failover)
+    handoff.claimDispatch({
+      cycleId: cycle.cycle_id,
+      requestId: reqId,
+      targetRole: "builder",
+      owner: "disp",
+      leaseMs: 60_000,
+      bindingId: "builder-a",
+    });
+    last = await dispatcher.step(cycle.cycle_id);
+    assert.equal(builderA.invocations, 1);
+    assert.equal(builderB.invocations, 0);
+    assert.equal(
+      handoff.store.listEvents().filter((e) => e.event_type === "cycle.failover_selected")
+        .length,
+      0,
+    );
+    const builds = handoff.listDispatchesForRequest(cycle.cycle_id, reqId);
+    assert.equal(builds.length, 1);
+    assert.equal(builds[0]!.binding_id, "builder-a");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("S13: old/dead fence late result cannot be accepted after failover claim", async () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock } = openHarness(dir);
+    const project = store.createProject("s13-fence");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-004",
+      baseSha: "base",
+      maxDispatchRetries: 4,
+    });
+    const pc = new FakeProgramControlAdapter(
+      [
+        pcDecision({
+          decision: "BUILD",
+          install_policy: { on_builder_candidate: "AWAIT_PC" },
+        }),
+      ],
+      envClock,
+    );
+    const builderA = new FakeBuilderAdapter([], envClock);
+    builderA.identity = { adapter_id: "fake-builder", role: "builder" };
+    const builderB = new FakeBuilderAdapter(
+      [{ status: "CANDIDATE_READY", candidate_sha: "sha-b" }],
+      envClock,
+    );
+    builderB.identity = { adapter_id: "fake-builder", role: "builder" };
+    const reviewer = new FakeReviewerAdapter([], envClock);
+    const catalog: RuntimeCatalogEntry[] = [
+      {
+        binding_id: "pc-main",
+        role: "program_control",
+        adapter: pc,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "reviewer-main",
+        role: "reviewer",
+        adapter: reviewer,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+    ];
+    const dispatcher = new Dispatcher(
+      handoff,
+      { programControl: pc, builder: builderA, reviewer },
+      {
+        owner: "disp",
+        leaseMs: 60_000,
+        routing: {
+          registry: multiBuilderRegistry(),
+          catalog,
+          costConstraint: TEST_COST_CONSTRAINT,
+          failoverPolicy: { mode: "FENCED" },
+        },
+      },
+    );
+    const { requestId, first } = await driveToBuilderReject({
+      handoff,
+      dispatcher,
+      cycleId: cycle.cycle_id,
+      failBuilder: builderA,
+      failWith: new Error("boom"),
+    });
+    const oldFence = first.fence_token;
+    const oldDispatchId = first.dispatch_id;
+
+    let last = await dispatcher.step(cycle.cycle_id);
+    while (builderB.invocations === 0 && last.cycle.state !== "RECOVERY_REQUIRED") {
+      last = await dispatcher.step(cycle.cycle_id);
+      if (builderB.invocations >= 1) break;
+    }
+    assert.equal(builderB.invocations, 1);
+
+    assert.throws(
+      () =>
+        handoff.acceptResult({
+          dispatchId: oldDispatchId,
+          fenceToken: oldFence,
+          envelope: {
+            protocol: PROTOCOL_V1,
+            envelope_id: envClock.id("env"),
+            kind: "builder_result",
+            cycle_id: cycle.cycle_id,
+            request_id: requestId,
+            from_role: "builder",
+            to_role: "program_control",
+            created_at: envClock.now(),
+            body: {
+              status: "CANDIDATE_READY",
+              candidate_sha: "late-old",
+              evidence_refs: [],
+              notes: null,
+            },
+          },
+        }),
+      (err: unknown) =>
+        err instanceof ControlError && err.code === "STALE_FENCE",
+    );
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("S13: A→B→C progression; no A→B→A ping-pong; no candidate → recovery", async () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock } = openHarness(dir);
+    const project = store.createProject("s13-abc");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-004",
+      baseSha: "base",
+      maxDispatchRetries: 6,
+    });
+    const pc = new FakeProgramControlAdapter(
+      [
+        pcDecision({
+          decision: "BUILD",
+          install_policy: { on_builder_candidate: "AWAIT_PC" },
+        }),
+      ],
+      envClock,
+    );
+    const failAlways = async () => {
+      throw new Error("always fail");
+    };
+    const builderA = new FakeBuilderAdapter([], envClock);
+    builderA.identity = { adapter_id: "fake-builder", role: "builder" };
+    builderA.build = failAlways;
+    const builderB = new FakeBuilderAdapter([], envClock);
+    builderB.identity = { adapter_id: "fake-builder", role: "builder" };
+    builderB.build = failAlways;
+    const builderC = new FakeBuilderAdapter([], envClock);
+    builderC.identity = { adapter_id: "fake-builder", role: "builder" };
+    builderC.build = failAlways;
+    const reviewer = new FakeReviewerAdapter([], envClock);
+    const registry = threeBuilderRegistry();
+    const catalog: RuntimeCatalogEntry[] = [
+      {
+        binding_id: "pc-main",
+        role: "program_control",
+        adapter: pc,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "builder-c",
+        role: "builder",
+        adapter: builderC,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "reviewer-main",
+        role: "reviewer",
+        adapter: reviewer,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+    ];
+    const dispatcher = new Dispatcher(
+      handoff,
+      { programControl: pc, builder: builderA, reviewer },
+      {
+        owner: "disp",
+        leaseMs: 60_000,
+        routing: {
+          registry,
+          catalog,
+          costConstraint: TEST_COST_CONSTRAINT,
+          failoverPolicy: { mode: "FENCED" },
+        },
+      },
+    );
+
+    let last = await dispatcher.step(cycle.cycle_id);
+    let guard = 0;
+    while (last.cycle.state !== "RECOVERY_REQUIRED" && guard < 40) {
+      last = await dispatcher.step(cycle.cycle_id);
+      guard += 1;
+    }
+    const buildRows = handoff.store.db
+      .prepare(
+        `SELECT binding_id, attempt_number, state FROM dispatches
+         WHERE target_role = 'builder' ORDER BY attempt_number`,
+      )
+      .all() as Array<{ binding_id: string; attempt_number: number; state: string }>;
+    assert.deepEqual(
+      buildRows.map((r) => r.binding_id),
+      ["builder-a", "builder-b", "builder-c"],
+    );
+    assert.equal(buildRows[0]!.attempt_number, 1);
+    assert.equal(buildRows[1]!.attempt_number, 2);
+    assert.equal(buildRows[2]!.attempt_number, 3);
+    // No ping-pong back to A
+    assert.ok(!buildRows.some((r, i) => i > 0 && r.binding_id === "builder-a"));
+
+    // Exhausting untried candidates entered existing recovery (no fabricate)
+    assert.equal(last.cycle.state, "RECOVERY_REQUIRED");
+    const buildsAfter = handoff.store.db
+      .prepare(`SELECT COUNT(*) AS n FROM dispatches WHERE target_role='builder'`)
+      .get() as { n: number };
+    assert.equal(Number(buildsAfter.n), 3);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("S13: selectFailoverBinding excludes attempted; quota/cost intact; no invented ceiling", async () => {
+  const registry = threeBuilderRegistry();
+  const builderA = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderB = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const builderC = new FakeBuilderAdapter([], { id: () => "x", now: () => "t" });
+  const catalog = catalogByBindingId([
+    {
+      binding_id: "builder-a",
+      role: "builder",
+      adapter: builderA,
+      probe: available(),
+      costProbe: costWithin("1"),
+      quotaProbe: quotaAvailable(),
+    },
+    {
+      binding_id: "builder-b",
+      role: "builder",
+      adapter: builderB,
+      probe: available(),
+      costProbe: costOver(),
+      quotaProbe: quotaAvailable(),
+    },
+    {
+      binding_id: "builder-c",
+      role: "builder",
+      adapter: builderC,
+      probe: available(),
+      costProbe: costWithin("5"),
+      quotaProbe: quotaAvailable(),
+    },
+  ]);
+  // Exclude A; B over ceiling → C wins (quota+cost intact)
+  const outcome = await selectFailoverBinding({
+    registry,
+    catalog,
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
+    excludeBindingIds: new Set(["builder-a"]),
+  });
+  assert.equal(outcome.status, "SELECTED");
+  if (outcome.status === "SELECTED") {
+    assert.equal(outcome.binding_id, "builder-c");
+    assert.deepEqual(outcome.excluded_binding_ids, ["builder-a"]);
+    assert.equal(outcome.estimate.currency_code, "USD");
+    assert.equal("automatic_escalation" in outcome, false);
+  }
+
+  // Exhausted quota on only remaining → block
+  const blocked = await selectFailoverBinding({
+    registry,
+    catalog: catalogByBindingId([
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: available(),
+        costProbe: costWithin(),
+        quotaProbe: quotaExhausted(),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderB,
+        probe: available(),
+        costProbe: costWithin(),
+        quotaProbe: quotaExhausted(),
+      },
+    ]),
+    request: { role: "builder", requiredCapabilities: [...BUILD_CAPS] },
+    costConstraint: TEST_COST_CONSTRAINT,
+    excludeBindingIds: new Set(["builder-a"]),
+  });
+  assert.equal(blocked.status, "BLOCKED");
+  if (blocked.status === "BLOCKED") {
+    assert.equal(blocked.reason, "NO_QUOTA_ROUTABLE_BINDING");
+  }
+});
+
+test("S13: failover_selected + claim atomic; injected pre-COMMIT failure leaves no partial state", () => {
+  const dir = tempState();
+  try {
+    const store = ControlStore.open({ stateDir: dir, idFactory: seqIds() });
+    const handoff = new HandoffStore(store);
+    const project = store.createProject("s13-atomic");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-004-S13",
+      baseSha: "base",
+      maxDispatchRetries: 3,
+    });
+    const ts = store.now().toISOString();
+    const reqId = "req_fo_atomic";
+    handoff.persistEnvelope({
+      protocol: PROTOCOL_V1,
+      envelope_id: "env_req",
+      kind: "control_request",
+      cycle_id: cycle.cycle_id,
+      request_id: reqId,
+      from_role: "program_control",
+      to_role: "builder",
+      created_at: ts,
+      body: {
+        action: "BUILD",
+        target_role: "builder",
+        work_package_ref: "WP-004",
+        base_sha: "base",
+        target_sha: null,
+        authoritative_references: [],
+        required_capabilities: [...BUILD_CAPS],
+        expected_result_kind: "builder_result",
+        stop_condition: "CANDIDATE_READY",
+        authorized_by_decision_id: null,
+        authorized_finding_ids: [],
+        retry_of_request_id: null,
+      },
+    });
+
+    // Prior terminal attempt
+    const prior = handoff.claimDispatch({
+      cycleId: cycle.cycle_id,
+      requestId: reqId,
+      targetRole: "builder",
+      owner: "owner",
+      leaseMs: 60_000,
+      bindingId: "builder-a",
+    });
+    handoff.rejectResult({
+      dispatchId: prior.dispatch_id,
+      fenceToken: prior.fence_token,
+      failureClass: "RUNTIME_ERROR",
+      detail: "prior",
+    });
+
+    const claimed = handoff.claimDispatch({
+      cycleId: cycle.cycle_id,
+      requestId: reqId,
+      targetRole: "builder",
+      owner: "owner",
+      leaseMs: 60_000,
+      bindingId: "builder-b",
+      coupledEvent: {
+        eventType: "cycle.failover_selected",
+        project_id: project.project_id,
+        work_id: null,
+        payload: {
+          cycle_id: cycle.cycle_id,
+          request_id: reqId,
+          target_role: "builder",
+          binding_id: "builder-b",
+          prior_binding_id: "builder-a",
+          prior_dispatch_id: prior.dispatch_id,
+          excluded_binding_ids: ["builder-a"],
+        },
+      },
+    });
+    assert.equal(claimed.binding_id, "builder-b");
+    assert.equal(claimed.attempt_number, 2);
+    const foOk = store
+      .listEvents()
+      .filter(
+        (e) =>
+          e.event_type === "cycle.failover_selected" &&
+          (e.payload as { dispatch_id?: string }).dispatch_id ===
+            claimed.dispatch_id,
+      );
+    assert.equal(foOk.length, 1);
+
+    // Injected failure before COMMIT
+    const beforeN = (
+      store.db
+        .prepare(`SELECT COUNT(*) AS n FROM dispatches WHERE request_id = ?`)
+        .get(reqId) as { n: number }
+    ).n;
+    const beforeEv = store.listEvents().length;
+    const origAppend = store.appendEvent.bind(store);
+    store.appendEvent = ((eventType, args) => {
+      if (eventType === "cycle.failover_selected") {
+        throw new Error("inject fail before failover_selected commit");
+      }
+      return origAppend(eventType, args);
+    }) as typeof store.appendEvent;
+
+    assert.throws(() =>
+      handoff.claimDispatch({
+        cycleId: cycle.cycle_id,
+        requestId: reqId,
+        targetRole: "builder",
+        owner: "owner",
+        leaseMs: 60_000,
+        bindingId: "builder-c",
+        coupledEvent: {
+          eventType: "cycle.failover_selected",
+          project_id: project.project_id,
+          work_id: null,
+          payload: {
+            cycle_id: cycle.cycle_id,
+            request_id: reqId,
+            binding_id: "builder-c",
+          },
+        },
+      }),
+    );
+    store.appendEvent = origAppend;
+    const afterN = (
+      store.db
+        .prepare(`SELECT COUNT(*) AS n FROM dispatches WHERE request_id = ?`)
+        .get(reqId) as { n: number }
+    ).n;
+    assert.equal(afterN, beforeN);
+    assert.equal(store.listEvents().length, beforeEv);
+    assert.equal(
+      store.listEvents().filter((e) => e.event_type === "cycle.failover_selected")
+        .length,
+      1,
+    );
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("S13: preclaim routing block does not emit failover_selected", async () => {
+  const dir = tempState();
+  try {
+    const { store, handoff, envClock } = openHarness(dir);
+    const project = store.createProject("s13-preclaim");
+    const cycle = handoff.createCycle({
+      projectId: project.project_id,
+      workPackageRef: "WP-004",
+      baseSha: "base",
+    });
+    const pc = new FakeProgramControlAdapter(
+      [
+        pcDecision({
+          decision: "BUILD",
+          install_policy: { on_builder_candidate: "AWAIT_PC" },
+        }),
+      ],
+      envClock,
+    );
+    const builderA = new FakeBuilderAdapter([], envClock);
+    const reviewer = new FakeReviewerAdapter([], envClock);
+    const registry = multiBuilderRegistry();
+    const catalog: RuntimeCatalogEntry[] = [
+      {
+        binding_id: "pc-main",
+        role: "program_control",
+        adapter: pc,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "builder-a",
+        role: "builder",
+        adapter: builderA,
+        probe: unavailable("agent"),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "builder-b",
+        role: "builder",
+        adapter: builderA,
+        probe: unavailable("cred"),
+        costProbe: costWithin(),
+      },
+      {
+        binding_id: "reviewer-main",
+        role: "reviewer",
+        adapter: reviewer,
+        probe: available(),
+        costProbe: costWithin(),
+      },
+    ];
+    const dispatcher = new Dispatcher(
+      handoff,
+      { programControl: pc, builder: builderA, reviewer },
+      {
+        owner: "disp",
+        leaseMs: 60_000,
+        routing: {
+          registry,
+          catalog,
+          costConstraint: TEST_COST_CONSTRAINT,
+          failoverPolicy: { mode: "FENCED" },
+        },
+      },
+    );
+    let last = await dispatcher.step(cycle.cycle_id);
+    while (
+      last.cycle.state !== "RECOVERY_REQUIRED" &&
+      last.action !== "routing_blocked"
+    ) {
+      last = await dispatcher.step(cycle.cycle_id);
+      if (last.action === "routing_blocked") break;
+    }
+    assert.equal(last.action, "routing_blocked");
+    assert.equal(
+      handoff.store.listEvents().filter((e) => e.event_type === "cycle.failover_selected")
+        .length,
+      0,
+    );
+    const builds = handoff.store.db
+      .prepare(`SELECT COUNT(*) AS n FROM dispatches WHERE target_role='builder'`)
+      .get() as { n: number };
+    assert.equal(Number(builds.n), 0);
   } finally {
     cleanup(dir);
   }
