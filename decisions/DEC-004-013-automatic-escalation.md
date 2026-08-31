@@ -1,10 +1,13 @@
 # DEC-004-013 — Automatic Escalation (WP-004-S12)
 
 **ID:** DEC-004-013
-**Status:** IMPLEMENTED (pending Independent Review / Program Control acceptance)
+**Status:** ACCEPTED
 **Date:** 2026-08-31
 **Work Package:** WP-004-S12
 **Authority:** Program Control (OWATA-REQ-0137)
+**Final Independent Review:** OWATA-REQ-0140 PASS / READY
+**Program Control acceptance:** OWATA-REQ-0141
+**OWATA-REQ-0138-F001:** RESOLVED by OWATA-REQ-0139
 **Related:** `decisions/DEC-004-012-live-cost-routing-cutover.md`, `decisions/DEC-004-010-live-quota-routing-cutover.md`, `decisions/DEC-004-005-routed-dispatch-cutover.md`, `decisions/DEC-004-006-human-routine-approval-zero.md`
 
 Builder MUST NOT expand or change this Decision beyond recording the Program Control adjudications below.
